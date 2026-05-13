@@ -6,60 +6,23 @@ import { Input } from "./ui/input";
 import { Switch } from "./ui/switch";
 import { Badge } from "./ui/badge";
 import { cn } from "../lib/utils";
-import {
-  Play,
-  Square,
-  TrendingUp,
-  TrendingDown,
-  Settings,
-  ShieldCheck,
-  Cpu,
-  BarChart3,
-} from "lucide-react";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "./ui/select";
+import { Play, Square, TrendingUp, TrendingDown, Settings, ShieldCheck, Cpu, BarChart3 } from "lucide-react";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "./ui/select";
 import { motion } from "motion/react";
 import { SYMBOLS } from "../constants";
-import { Candle } from "../types";
 import { analyzeMarket } from "../lib/strategy";
 import { useRiskManager } from "../hooks/useRiskManager";
 import { useTradingEngine } from "../hooks/useTradingEngine";
+import { useConnectionStore, useBotStore, useMarketStore } from "../store";
 
-interface BotControlsProps {
-  symbol: string;
-  setSymbol: (s: string) => void;
-  candles: Candle[];
-  timeframe: number;
-  setTimeframe: (t: number) => void;
-  token: string;
-  isAuthorized: boolean;
-  isBotRunning: boolean;
-  setIsBotRunning: (val: boolean) => void;
-  isDemo: boolean;
-  setIsDemo: (val: boolean) => void;
-  balance: number | null;
-}
+// Zero props — todas as dependências vêm das stores
+export const BotControls = () => {
+  // Stores
+  const { isAuthorized, isDemo, balance } = useConnectionStore();
+  const { isBotRunning, setIsBotRunning } = useBotStore();
+  const { symbol, setSymbol, candles, timeframe, setTimeframe } = useMarketStore();
 
-export const BotControls = ({
-  symbol,
-  setSymbol,
-  candles,
-  timeframe,
-  setTimeframe,
-  token,
-  isAuthorized,
-  isBotRunning,
-  setIsBotRunning,
-  isDemo,
-  setIsDemo,
-  balance,
-}: BotControlsProps) => {
-  // Settings State
+  // Settings locais (futuramente virão de useSettingsStore)
   const [stake, setStake] = useState(1);
   const [targetProfit, setTargetProfit] = useState(10);
   const [stopLoss, setStopLoss] = useState(5);
@@ -75,47 +38,28 @@ export const BotControls = ({
   const [strategyProfile, setStrategyProfile] = useState<"conservative" | "balanced" | "aggressive">("balanced");
   const [backtestResult, setBacktestResult] = useState<string | null>(null);
 
-  // Stable session ID (fixed per component mount, no flickering)
   const sessionIdRef = useRef(Math.random().toString(36).substring(2, 8).toUpperCase());
-
-  // Ref for isBotRunning used inside async closures
   const isBotRunningRef = useRef(false);
-  useEffect(() => {
-    isBotRunningRef.current = isBotRunning;
-  }, [isBotRunning]);
+  useEffect(() => { isBotRunningRef.current = isBotRunning; }, [isBotRunning]);
 
-  // Risk Manager Hook
+  // Risk Manager
   const [riskState, riskActions] = useRiskManager(
     { stake, targetProfit, stopLoss, useMartingale, martingaleMultiplier, maxMartingaleSteps, useSoros, maxSorosLevels },
-    isBotRunning,
-    balance,
-    setIsBotRunning
+    isBotRunning, balance, setIsBotRunning
   );
 
-  // Bot start/stop lifecycle
   useEffect(() => {
-    if (isBotRunning && balance !== null) {
-      riskActions.onBotStart(balance);
-    }
-    if (!isBotRunning) {
-      riskActions.onBotStop();
-    }
+    if (isBotRunning && balance !== null) riskActions.onBotStart(balance);
+    if (!isBotRunning) riskActions.onBotStop();
   }, [isBotRunning]);
 
-  // Trading Engine Hook
+  // Trading Engine
   const { lastSignal, sessionStats, error, placeTrade } = useTradingEngine(
-    {
-      symbol, candles,
-      currentStake: riskState.currentStake,
-      stake, minConfidence, cooldownSeconds,
-      isBotRunning, isAuthorized,
-      onWin: riskActions.onWin,
-      onLoss: riskActions.onLoss,
-    },
+    { symbol, candles, currentStake: riskState.currentStake, stake, minConfidence, cooldownSeconds, isBotRunning, isAuthorized, onWin: riskActions.onWin, onLoss: riskActions.onLoss },
     isBotRunningRef
   );
 
-  // Subscribe to ticks when symbol changes
+  // Subscribe ticks on symbol change
   useEffect(() => {
     if (isAuthorized) {
       derivService.unsubscribeTicks(symbol);
@@ -125,32 +69,25 @@ export const BotControls = ({
 
   // Backtest
   const runBacktest = () => {
-    if (candles.length < 50) {
-      setBacktestResult("Duração insuficiente de dados para backtest.");
-      return;
-    }
-    let virtualBalance = 1000;
-    let wins = 0;
-    let losses = 0;
+    if (candles.length < 50) { setBacktestResult("Duração insuficiente de dados para backtest."); return; }
+    let virtualBalance = 1000, wins = 0, losses = 0;
     for (let i = 30; i < candles.length - 1; i++) {
-      const slice = candles.slice(0, i + 1);
-      const signal = analyzeMarket(slice, symbol);
+      const signal = analyzeMarket(candles.slice(0, i + 1), symbol);
       if (signal.type !== "NEUTRAL" && signal.confidence >= minConfidence) {
-        const nextCandle = candles[i + 1];
-        const isWin = signal.type === "CALL" ? nextCandle.close > nextCandle.open : nextCandle.close < nextCandle.open;
-        if (isWin) { wins++; virtualBalance += stake * 0.95; }
-        else { losses++; virtualBalance -= stake; }
+        const next = candles[i + 1];
+        const isWin = signal.type === "CALL" ? next.close > next.open : next.close < next.open;
+        isWin ? (wins++, virtualBalance += stake * 0.95) : (losses++, virtualBalance -= stake);
       }
     }
-    const winRate = wins + losses > 0 ? Math.round((wins / (wins + losses)) * 100) : 0;
-    setBacktestResult(`Backtest: ${wins}W / ${losses}L | WinRate: ${winRate}% | Saldo Simulado: $${virtualBalance.toFixed(2)}`);
+    const wr = wins + losses > 0 ? Math.round((wins / (wins + losses)) * 100) : 0;
+    setBacktestResult(`Backtest: ${wins}W / ${losses}L | WinRate: ${wr}% | Saldo Simulado: $${virtualBalance.toFixed(2)}`);
   };
 
   const feedbackMessage = error || backtestResult;
 
   return (
     <div className="grid grid-cols-1 xl:grid-cols-2 gap-6 relative">
-      {/* Modal de Resultado */}
+      {/* Modal */}
       {riskState.showModal.show && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-in fade-in duration-300">
           <NeonCard variant={riskState.showModal.type === "profit" ? "purple" : "blue"} className="max-w-md w-full p-8 text-center space-y-6 shadow-2xl">
@@ -159,7 +96,7 @@ export const BotControls = ({
             </div>
             <div className="space-y-2">
               <h2 className="text-2xl font-black uppercase tracking-tighter">{riskState.showModal.type === "profit" ? "Parabéns!" : "Operação Encerrada"}</h2>
-              <p className="text-muted-foreground font-medium">{riskState.showModal.type === "profit" ? `Meta de $${targetProfit} atingida com sucesso!` : "Meta de perdas atingida, operação encerrada."}</p>
+              <p className="text-muted-foreground font-medium">{riskState.showModal.type === "profit" ? `Meta de $${targetProfit} atingida!` : "Meta de perdas atingida, operação encerrada."}</p>
             </div>
             <div className="py-4 px-6 bg-white/5 rounded-2xl border border-white/10">
               <p className="text-[10px] text-muted-foreground uppercase font-bold mb-1">Resultado da Sessão</p>
@@ -172,7 +109,7 @@ export const BotControls = ({
         </div>
       )}
 
-      {/* Card Esquerdo: Configurações Técnicas */}
+      {/* Card Esquerdo */}
       <NeonCard variant="purple" className="p-6">
         <div className="flex items-center justify-between mb-6">
           <h3 className="text-lg font-semibold flex items-center gap-2"><ShieldCheck className="w-5 h-5 text-purple-500" />Configurações Técnicas</h3>
@@ -180,9 +117,7 @@ export const BotControls = ({
         </div>
         <div className="space-y-4">
           {feedbackMessage && (
-            <div className="p-3 bg-red-500/10 border border-red-500/30 rounded-lg text-[10px] text-red-400 font-bold uppercase animate-pulse">
-              {feedbackMessage}
-            </div>
+            <div className="p-3 bg-red-500/10 border border-red-500/30 rounded-lg text-[10px] text-red-400 font-bold uppercase animate-pulse">{feedbackMessage}</div>
           )}
           <div className="grid grid-cols-2 gap-4">
             <div className="space-y-2 col-span-2">
@@ -218,19 +153,20 @@ export const BotControls = ({
         </div>
       </NeonCard>
 
-      {/* Card Direito: IA X-One Intelligence */}
+      {/* Card Direito */}
       <NeonCard variant="blue" className="p-6">
         <div className="flex items-center justify-between mb-6">
           <h3 className="text-lg font-semibold flex items-center gap-2"><Cpu className="w-5 h-5 text-blue-500" />IA X-One Intelligence</h3>
           <div className="flex items-center gap-2">
-            <Badge variant="outline" className={cn("text-[8px] md:text-[10px] uppercase font-black px-2 py-0.5", lastSignal?.indicators.marketCondition === "TRENDING" ? "bg-green-500/10 text-green-400 border-green-500/30" : "bg-yellow-500/10 text-yellow-500 border-yellow-500/30")}>
+            <Badge variant="outline" className={cn("text-[8px] md:text-[10px] uppercase font-black px-2 py-0.5",
+              lastSignal?.indicators.marketCondition === "TRENDING" ? "bg-green-500/10 text-green-400 border-green-500/30" : "bg-yellow-500/10 text-yellow-500 border-yellow-500/30")}>
               {lastSignal?.indicators.marketCondition || "ANALISANDO..."}
             </Badge>
             <Switch checked={isBotRunning} onCheckedChange={setIsBotRunning} disabled={!isAuthorized} />
           </div>
         </div>
 
-        {/* Confidence Meter */}
+        {/* Confidence */}
         <div className="mb-6 space-y-2">
           <div className="flex items-center justify-between text-[10px] uppercase font-bold text-muted-foreground">
             <span>Confiança da IA</span>
@@ -246,7 +182,8 @@ export const BotControls = ({
         <div className="grid grid-cols-2 gap-2 mb-6">
           <div className="p-2 bg-white/5 rounded-lg border border-white/5 flex flex-col items-center justify-center">
             <span className="text-[7px] text-muted-foreground uppercase font-bold">Trend Freshness</span>
-            <span className={cn("text-[9px] font-black uppercase tracking-widest", (lastSignal?.indicators.trendFreshnessScore || 0) > 7 ? "text-green-400" : (lastSignal?.indicators.trendFreshnessScore || 0) > 4 ? "text-yellow-400" : "text-red-400")}>
+            <span className={cn("text-[9px] font-black uppercase tracking-widest",
+              (lastSignal?.indicators.trendFreshnessScore || 0) > 7 ? "text-green-400" : (lastSignal?.indicators.trendFreshnessScore || 0) > 4 ? "text-yellow-400" : "text-red-400")}>
               {lastSignal?.indicators.trendFreshnessScore?.toFixed(1) || "0.0"}/10
             </span>
           </div>
@@ -259,7 +196,7 @@ export const BotControls = ({
           <div className="p-2 bg-white/5 rounded-lg border border-white/5 flex flex-col items-center justify-center col-span-2">
             <span className="text-[7px] text-muted-foreground uppercase font-bold">Análise Estrutural</span>
             <span className="text-[8px] font-black uppercase text-blue-400 text-center leading-tight">{lastSignal?.indicators.reason || "Aguardando confirmação..."}</span>
-            {lastSignal?.indicators.isExhausted && (<Badge variant="destructive" className="mt-1 h-3 text-[6px] uppercase px-1">Exaustão Detectada</Badge>)}
+            {lastSignal?.indicators.isExhausted && <Badge variant="destructive" className="mt-1 h-3 text-[6px] uppercase px-1">Exaustão Detectada</Badge>}
           </div>
         </div>
 
@@ -286,7 +223,7 @@ export const BotControls = ({
               <Select value={symbol} onValueChange={setSymbol}>
                 <SelectTrigger className="bg-black/20 border-white/10 flex-1"><SelectValue placeholder="Ativo" /></SelectTrigger>
                 <SelectContent className="bg-[#111114] border-white/10 text-white">
-                  {SYMBOLS.map((s) => (<SelectItem key={s.value} value={s.value}>{s.label}</SelectItem>))}
+                  {SYMBOLS.map((s) => <SelectItem key={s.value} value={s.value}>{s.label}</SelectItem>)}
                 </SelectContent>
               </Select>
               <Select value={String(timeframe)} onValueChange={(val) => setTimeframe(Number(val))}>
@@ -317,7 +254,7 @@ export const BotControls = ({
             <Input type="number" value={stopLoss} onChange={(e) => setStopLoss(Number(e.target.value))} className="bg-black/20 border-white/10 text-red-400 h-9" />
           </div>
 
-          {/* Advanced Risk Management */}
+          {/* Advanced */}
           <div className="col-span-2 p-3 bg-white/5 rounded-xl border border-white/10 space-y-3">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
@@ -361,15 +298,15 @@ export const BotControls = ({
 
           <div className="flex items-end col-span-2">
             <Button
-              className={cn("w-full h-11 gap-2 font-black uppercase tracking-widest transition-all duration-300 shadow-xl", isBotRunning ? "bg-red-600 hover:bg-red-700 shadow-red-500/20" : "bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 shadow-blue-500/20")}
-              onClick={() => setIsBotRunning(!isBotRunning)} disabled={!isAuthorized}
-            >
+              className={cn("w-full h-11 gap-2 font-black uppercase tracking-widest transition-all duration-300 shadow-xl",
+                isBotRunning ? "bg-red-600 hover:bg-red-700 shadow-red-500/20" : "bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 shadow-blue-500/20")}
+              onClick={() => setIsBotRunning(!isBotRunning)} disabled={!isAuthorized}>
               {isBotRunning ? <><Square className="w-5 h-5 fill-current" /> Stop IA</> : <><Play className="w-5 h-5 fill-current" /> Start IA</>}
             </Button>
           </div>
         </div>
 
-        {/* Manual Trade Buttons */}
+        {/* Manual Buttons */}
         <div className="flex gap-2">
           <Button variant="outline" className="flex-1 border-green-500/30 text-green-400 hover:bg-green-500/10 gap-2 font-bold" disabled={!isAuthorized || isBotRunning} onClick={() => placeTrade("CALL")}>
             <TrendingUp className="w-4 h-4" /> CALL
