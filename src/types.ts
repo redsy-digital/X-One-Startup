@@ -1,3 +1,25 @@
+export type StrategyProfile = "conservative" | "balanced" | "aggressive";
+
+export interface StrategyProfileConfig {
+  // Confidence thresholds
+  minConfidenceOverride: number;
+  // Market condition
+  requireTrending: boolean;
+  // Score requirements
+  dominanceMultiplier: number;   // How much stronger the winning side must be
+  minWinScore: number;           // Minimum absolute score to trade
+  // Penalty weights
+  freshnessWeight: number;       // Multiplier on freshness penalty
+  timingWeight: number;          // Multiplier on timing penalty
+  emaDistWeight: number;         // Multiplier on EMA distance penalty
+  // RSI extremes (tighter = more conservative)
+  rsiOverbought: number;
+  rsiOversold: number;
+  // Exhaustion tolerance
+  maxConsecutiveCandles: number;
+  maxExhaustionScore: number;
+}
+
 export interface TickData {
   time: number;
   price: number;

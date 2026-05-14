@@ -10,7 +10,8 @@ import { Play, Square, TrendingUp, TrendingDown, Settings, ShieldCheck, Cpu, Bar
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "./ui/select";
 import { motion } from "motion/react";
 import { SYMBOLS } from "../constants";
-import { analyzeMarket } from "../lib/strategy";
+import { analyzeMarket, STRATEGY_PROFILES } from "../lib/strategy";
+import { StrategyProfile } from "../types";
 import { useRiskManager } from "../hooks/useRiskManager";
 import { useTradingEngine } from "../hooks/useTradingEngine";
 import { useConnectionStore, useBotStore, useMarketStore } from "../store";
@@ -35,7 +36,13 @@ export const BotControls = () => {
   const [maxSorosLevels, setMaxSorosLevels] = useState(3);
   const [maxConsecutiveLosses, setMaxConsecutiveLosses] = useState(5);
   const [cooldownAfterLoss, setCooldownAfterLoss] = useState(30);
-  const [strategyProfile, setStrategyProfile] = useState<"conservative" | "balanced" | "aggressive">("balanced");
+  const [strategyProfile, setStrategyProfile] = useState<StrategyProfile>("balanced");
+
+  // Quando o perfil muda, atualiza o minConfidence automaticamente com o override do perfil
+  const handleProfileChange = (val: StrategyProfile) => {
+    setStrategyProfile(val);
+    setMinConfidence(STRATEGY_PROFILES[val].minConfidenceOverride);
+  };
   const [backtestResult, setBacktestResult] = useState<string | null>(null);
 
   const sessionIdRef = useRef(Math.random().toString(36).substring(2, 8).toUpperCase());
@@ -55,7 +62,18 @@ export const BotControls = () => {
 
   // Trading Engine
   const { lastSignal, sessionStats, error, placeTrade } = useTradingEngine(
-    { symbol, candles, currentStake: riskState.currentStake, stake, minConfidence, cooldownSeconds, isBotRunning, isAuthorized, onWin: riskActions.onWin, onLoss: riskActions.onLoss },
+    {
+      symbol, candles,
+      currentStake: riskState.currentStake,
+      stake, minConfidence, cooldownSeconds,
+      strategyProfile, maxConsecutiveLosses, cooldownAfterLoss,
+      isBotRunning, isAuthorized,
+      onWin: riskActions.onWin,
+      onLoss: riskActions.onLoss,
+      onForceStop: (reason: string) => {
+        console.warn("[BotControls] Consecutive loss cooldown:", reason);
+      },
+    },
     isBotRunningRef
   );
 
@@ -122,7 +140,7 @@ export const BotControls = () => {
           <div className="grid grid-cols-2 gap-4">
             <div className="space-y-2 col-span-2">
               <label className="text-xs text-muted-foreground uppercase font-bold px-1">Perfil da IA</label>
-              <Select value={strategyProfile} onValueChange={(val: any) => setStrategyProfile(val)}>
+              <Select value={strategyProfile} onValueChange={(val: any) => handleProfileChange(val as StrategyProfile)}>
                 <SelectTrigger className="bg-black/20 border-white/10"><SelectValue /></SelectTrigger>
                 <SelectContent className="bg-[#111114] border-white/10 text-white">
                   <SelectItem value="conservative">Conservador (Min. 80% Conf.)</SelectItem>
@@ -206,7 +224,7 @@ export const BotControls = () => {
             { label: "Wins", value: sessionStats.wins, color: "text-green-400" },
             { label: "Losses", value: sessionStats.losses, color: "text-red-400" },
             { label: "WR", value: `${sessionStats.wins + sessionStats.losses > 0 ? Math.round((sessionStats.wins / (sessionStats.wins + sessionStats.losses)) * 100) : 0}%`, color: "text-blue-400" },
-            { label: "Conseq. L", value: sessionStats.consecutiveLosses, color: "text-orange-400" },
+            { label: "Conseq. L", value: sessionStats.consecutiveLosses, color: sessionStats.consecutiveLosses >= maxConsecutiveLosses ? "text-red-400 animate-pulse" : "text-orange-400" },
           ].map(({ label, value, color }) => (
             <div key={label} className="p-2 bg-white/5 rounded-lg border border-white/10 text-center">
               <p className="text-[8px] text-muted-foreground uppercase font-bold">{label}</p>
