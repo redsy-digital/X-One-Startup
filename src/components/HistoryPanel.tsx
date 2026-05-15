@@ -10,7 +10,7 @@ import {
   Filter,
   ArrowRight
 } from "lucide-react";
-import { getTradeHistory, clearTradeHistory, exportToPDF } from "../lib/storage";
+import { clearTradeHistory, exportToPDF } from "../lib/storage";
 import { TradeHistory } from "../types";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
@@ -19,13 +19,9 @@ import { cn } from "../lib/utils";
 import { motion, AnimatePresence } from "motion/react";
 
 export const HistoryPanel = () => {
-  const [history, setHistory] = useState<TradeHistory[]>([]);
+  const { history, loadHistory } = useHistoryStore();
   const [filterResult, setFilterResult] = useState<"ALL" | "WON" | "LOST">("ALL");
   const [filterType, setFilterType] = useState<"ALL" | "CALL" | "PUT">("ALL");
-
-  const loadHistory = () => {
-    setHistory(getTradeHistory());
-  };
 
   useEffect(() => {
     loadHistory();

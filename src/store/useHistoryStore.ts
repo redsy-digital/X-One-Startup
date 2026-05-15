@@ -1,16 +1,26 @@
 import { create } from "zustand";
 import { TradeHistory } from "../types";
-import { getTradeHistory } from "../lib/storage";
+import { loadHistoryFromSupabase, getTradeHistory } from "../lib/storage";
 
 interface HistoryState {
   history: TradeHistory[];
-  loadHistory: () => void;
+  historyLoading: boolean;
+  loadHistory: () => Promise<void>;
 }
 
 export const useHistoryStore = create<HistoryState>((set) => ({
   history: [],
+  historyLoading: false,
 
-  loadHistory: () => {
-    set({ history: getTradeHistory() });
+  loadHistory: async () => {
+    set({ historyLoading: true });
+    try {
+      // Tenta Supabase primeiro; cai no localStorage se não houver sessão
+      const history = await loadHistoryFromSupabase();
+      set({ history, historyLoading: false });
+    } catch {
+      // Fallback garantido
+      set({ history: getTradeHistory(), historyLoading: false });
+    }
   },
 }));

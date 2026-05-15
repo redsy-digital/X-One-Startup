@@ -26,7 +26,7 @@ export class DerivService {
 
   private triedEndpointsCount = 0;
 
-  constructor(appId: string = "1089") {
+  constructor(appId: string = import.meta.env.VITE_DERIV_APP_ID || "1089") {
     this.appId = appId;
     const savedIndex = localStorage.getItem("deriv_endpoint_index");
     if (savedIndex !== null) {
