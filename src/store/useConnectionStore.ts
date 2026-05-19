@@ -2,13 +2,7 @@ import { create } from "zustand";
 import { User } from "@supabase/supabase-js";
 import { supabase } from "../lib/supabase";
 import { derivService } from "../lib/deriv";
-import {
-  buildDerivOAuthUrl,
-  parseDerivOAuthCallback,
-  hasDerivOAuthCallback,
-  clearOAuthParams,
-  DerivAccount,
-} from "../lib/derivOAuth";
+import { DerivAccount } from "../lib/derivOAuth";
 
 // ── Estado ────────────────────────────────────────────────────────────────────
 
@@ -18,31 +12,31 @@ interface ConnectionState {
   authLoading: boolean;
 
   // Deriv connection
-  derivAccounts: DerivAccount[];      // todas as contas retornadas pelo OAuth
-  activeAccount: DerivAccount | null; // conta em uso agora
+  derivAccounts: DerivAccount[];
+  activeAccount: DerivAccount | null;
   isDemo: boolean;
-  isAuthorized: boolean;              // WebSocket autenticado com sucesso
-  derivTokenExpired: boolean;         // token expirou → mostrar banner
-  derivLoading: boolean;              // a carregar conexão Deriv
+  isAuthorized: boolean;
+  derivTokenExpired: boolean;
+  derivLoading: boolean;
+  derivError: string | null;
 
-  // Legado (mantidos para compatibilidade com hooks existentes)
+  // Legado (compatibilidade com hooks)
   token: string;
   isLoggedIn: boolean;
   balance: number | null;
 
-  // Actions — Auth
+  // Actions — Auth Supabase
   initAuth: () => Promise<void>;
   signIn: (email: string, password: string) => Promise<string | null>;
   signUp: (email: string, password: string) => Promise<string | null>;
   signOut: () => Promise<void>;
 
-  // Actions — Deriv
-  connectDeriv: () => void;           // inicia OAuth redirect
-  handleOAuthCallback: () => Promise<void>; // processa callback da Deriv
-  switchAccount: (isDemo: boolean) => void; // troca Demo ↔ Real
-  disconnectDeriv: () => Promise<void>;     // remove conexão Deriv
+  // Actions — Deriv PAT
+  connectWithPAT: (pat: string) => Promise<string | null>;
+  switchAccount: (isDemo: boolean) => void;
+  disconnectDeriv: () => Promise<void>;
 
-  // Actions — Estado
+  // Setters
   setIsAuthorized: (val: boolean) => void;
   setBalance: (val: number | null) => void;
   setDerivTokenExpired: (val: boolean) => void;
@@ -62,6 +56,7 @@ export const useConnectionStore = create<ConnectionState>((set, get) => ({
   isAuthorized: false,
   derivTokenExpired: false,
   derivLoading: false,
+  derivError: null,
 
   // Legado
   token: "",
@@ -73,43 +68,24 @@ export const useConnectionStore = create<ConnectionState>((set, get) => ({
   initAuth: async () => {
     set({ authLoading: true });
 
-    // 1. Verificar sessão Supabase existente
     const { data: { session } } = await supabase.auth.getSession();
 
     if (session?.user) {
-      set({
-        supabaseUser: session.user,
-        isLoggedIn: true,
-        authLoading: false,
-      });
-
-      // 2. Verificar callback OAuth da Deriv (URL com ?acct1=...)
-      if (hasDerivOAuthCallback()) {
-        await get().handleOAuthCallback();
-        return;
-      }
-
-      // 3. Carregar conexão Deriv existente do Supabase
-      await loadDerivConnection(set);
+      set({ supabaseUser: session.user, isLoggedIn: true, authLoading: false });
+      await _loadDerivConnection(set);
     } else {
       set({ authLoading: false });
     }
 
-    // 4. Subscrever a mudanças de sessão Supabase
     supabase.auth.onAuthStateChange(async (event, session) => {
       if (event === "SIGNED_IN" && session?.user) {
         set({ supabaseUser: session.user, isLoggedIn: true });
-        await loadDerivConnection(set);
+        await _loadDerivConnection(set);
       } else if (event === "SIGNED_OUT") {
         derivService.disconnect();
         set({
-          supabaseUser: null,
-          isLoggedIn: false,
-          isAuthorized: false,
-          token: "",
-          balance: null,
-          derivAccounts: [],
-          activeAccount: null,
+          supabaseUser: null, isLoggedIn: false, isAuthorized: false,
+          token: "", balance: null, derivAccounts: [], activeAccount: null,
         });
       }
     });
@@ -130,104 +106,108 @@ export const useConnectionStore = create<ConnectionState>((set, get) => ({
   signOut: async () => {
     derivService.disconnect();
     await supabase.auth.signOut();
-    // Estado limpo via onAuthStateChange
   },
 
-  // ── Deriv OAuth ───────────────────────────────────────────────────────────
+  // ── Deriv PAT ─────────────────────────────────────────────────────────────
 
-  connectDeriv: () => {
-    window.location.href = buildDerivOAuthUrl();
-  },
-
-  handleOAuthCallback: async () => {
+  connectWithPAT: async (pat: string) => {
     const { supabaseUser } = get();
-    if (!supabaseUser) return;
+    if (!supabaseUser) return "Utilizador não autenticado.";
 
-    set({ derivLoading: true });
+    set({ derivLoading: true, derivError: null });
 
-    const accounts = parseDerivOAuthCallback();
-    clearOAuthParams();
+    try {
+      // 1. Buscar contas via REST
+      derivService.setToken(pat);
+      const rawAccounts = await derivService.fetchAccounts();
 
-    if (accounts.length === 0) {
-      set({ derivLoading: false });
-      return;
+      if (!rawAccounts || rawAccounts.length === 0) {
+        set({ derivLoading: false, derivError: "Nenhuma conta encontrada para este token." });
+        return "Nenhuma conta encontrada para este token.";
+      }
+
+      // 2. Normalizar contas → DerivAccount[]
+      const accounts: DerivAccount[] = rawAccounts.map((a: any) => ({
+        account_id: a.account_id,
+        token: pat, // PAT é o mesmo para todas as contas
+        currency: a.currency ?? "USD",
+        is_demo:
+          a.account_type === "demo" ||
+          a.is_virtual === true ||
+          a.is_virtual === 1 ||
+          String(a.account_id ?? "").toUpperCase().startsWith("VRT"),
+      }));
+
+      // 3. Conta activa: demo preferida
+      const demoAccount = accounts.find((a) => a.is_demo) ?? accounts[0];
+
+      // 4. Guardar no Supabase
+      await supabase.from("deriv_connections").upsert(
+        {
+          user_id: supabaseUser.id,
+          account_id: demoAccount.account_id,
+          token: pat, // token = PAT (encriptado no Supabase)
+          currency: demoAccount.currency,
+          is_demo: demoAccount.is_demo,
+          accounts: accounts,
+          last_used_at: new Date().toISOString(),
+          is_active: true,
+        },
+        { onConflict: "user_id" }
+      );
+
+      // 5. Actualizar store
+      set({
+        derivAccounts: accounts,
+        activeAccount: demoAccount,
+        isDemo: demoAccount.is_demo,
+        token: pat,
+      });
+
+      // 6. Conectar WebSocket via OTP
+      derivService.connect(demoAccount.account_id, demoAccount.is_demo);
+
+      return null; // sem erro
+    } catch (e: any) {
+      const msg = e.message || "Erro ao conectar à Deriv.";
+      set({ derivLoading: false, derivError: msg });
+      return msg;
     }
-
-    // Conta demo é a principal por defeito; se não existir, usa a primeira
-    const demoAccount = accounts.find((a) => a.is_demo) ?? accounts[0];
-    const realAccount = accounts.find((a) => !a.is_demo) ?? null;
-    const primaryAccount = demoAccount;
-
-    // Guardar no Supabase
-    const { error } = await supabase.from("deriv_connections").upsert(
-      {
-        user_id: supabaseUser.id,
-        account_id: primaryAccount.account_id,
-        token: primaryAccount.token,
-        currency: primaryAccount.currency,
-        is_demo: primaryAccount.is_demo,
-        accounts: accounts,
-        last_used_at: new Date().toISOString(),
-        is_active: true,
-      },
-      { onConflict: "user_id" }
-    );
-
-    if (error) {
-      console.error("[ConnectionStore] Error saving Deriv connection:", error.message);
-      set({ derivLoading: false });
-      return;
-    }
-
-    set({
-      derivAccounts: accounts,
-      activeAccount: primaryAccount,
-      isDemo: primaryAccount.is_demo,
-      token: primaryAccount.token,
-    });
-
-    connectWebSocket(primaryAccount.token, set);
   },
 
   // ── Troca Demo ↔ Real ─────────────────────────────────────────────────────
 
-  switchAccount: (isDemo) => {
-    const { derivAccounts } = get();
+  switchAccount: (isDemo: boolean) => {
+    const { derivAccounts, token } = get();
     const target = derivAccounts.find((a) => a.is_demo === isDemo);
 
     if (!target) {
-      console.warn("[ConnectionStore] No account found for isDemo:", isDemo);
+      console.warn("[ConnectionStore] Conta não encontrada para isDemo:", isDemo);
       return;
     }
 
     set({
       activeAccount: target,
       isDemo: target.is_demo,
-      token: target.token,
       isAuthorized: false,
       balance: null,
     });
 
-    // Reconectar WebSocket com novo token (sem novo OAuth)
-    derivService.setToken(target.token, target.is_demo);
-    if (!derivService["socket"] || derivService["socket"].readyState !== WebSocket.OPEN) {
-      derivService.connect();
-    }
+    // Reconecta com o mesmo PAT mas para outra conta (novo OTP)
+    derivService.setToken(token, target.is_demo);
+    derivService.connect(target.account_id, target.is_demo);
   },
 
-  // ── Desconectar Deriv ─────────────────────────────────────────────────────
+  // ── Desconectar ───────────────────────────────────────────────────────────
 
   disconnectDeriv: async () => {
     const { supabaseUser } = get();
 
     derivService.disconnect();
     set({
-      derivAccounts: [],
-      activeAccount: null,
-      isAuthorized: false,
-      token: "",
-      balance: null,
-      derivTokenExpired: false,
+      derivAccounts: [], activeAccount: null,
+      isAuthorized: false, token: "", balance: null,
+      derivTokenExpired: false, derivError: null,
     });
 
     if (supabaseUser) {
@@ -238,22 +218,19 @@ export const useConnectionStore = create<ConnectionState>((set, get) => ({
     }
   },
 
-  // ── Setters simples ───────────────────────────────────────────────────────
+  // ── Setters ───────────────────────────────────────────────────────────────
 
   setIsAuthorized: (val) => set({ isAuthorized: val }),
   setBalance: (val) => set({ balance: val }),
   setDerivTokenExpired: (val) => set({ derivTokenExpired: val }),
   setIsLoggedIn: (val) => set({ isLoggedIn: val }),
-  setIsDemo: (val) => {
-    // Mantido para compatibilidade — usa switchAccount internamente
-    get().switchAccount(val);
-  },
+  setIsDemo: (val) => get().switchAccount(val),
   setToken: (val) => set({ token: val }),
 }));
 
-// ── Helpers privados ──────────────────────────────────────────────────────────
+// ── Helper: carrega conexão Deriv guardada no Supabase ────────────────────────
 
-async function loadDerivConnection(set: any) {
+async function _loadDerivConnection(set: any) {
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return;
 
@@ -264,49 +241,26 @@ async function loadDerivConnection(set: any) {
     .eq("is_active", true)
     .single();
 
-  if (error || !data) return; // sem conexão guardada
+  if (error || !data) return;
 
-  const accounts: DerivAccount[] = data.accounts ?? [
-    {
-      account_id: data.account_id,
-      token: data.token,
-      currency: data.currency,
-      is_demo: data.is_demo,
-    },
-  ];
+  const accounts: DerivAccount[] = data.accounts ?? [{
+    account_id: data.account_id,
+    token: data.token,
+    currency: data.currency,
+    is_demo: data.is_demo,
+  }];
 
-  // Restaurar a conta que estava ativa (demo por defeito)
-  const activeAccount = accounts.find((a) => a.is_demo === data.is_demo) ?? accounts[0];
+  const active = accounts.find((a) => a.is_demo === data.is_demo) ?? accounts[0];
+  const pat = data.token;
 
   set({
     derivAccounts: accounts,
-    activeAccount,
-    isDemo: activeAccount.is_demo,
-    token: activeAccount.token,
+    activeAccount: active,
+    isDemo: active.is_demo,
+    token: pat,
   });
 
-  connectWebSocket(activeAccount.token, set);
-}
-
-function connectWebSocket(token: string, set: any) {
-  derivService.setToken(token, true);
-  derivService.connect();
-
-  // Detetar token expirado via erro de autorização
-  const unsubAuth = derivService.on("authorize", (data: any) => {
-    if (data.error) {
-      const msg: string = data.error.message || "";
-      const isExpired =
-        msg.toLowerCase().includes("invalid token") ||
-        msg.toLowerCase().includes("expired") ||
-        msg.toLowerCase().includes("InvalidToken");
-
-      if (isExpired) {
-        set({ derivTokenExpired: true, isAuthorized: false });
-      }
-    } else {
-      set({ isAuthorized: true, derivTokenExpired: false, derivLoading: false });
-    }
-    unsubAuth();
-  });
+  // Reconecta automaticamente
+  derivService.setToken(pat, active.is_demo);
+  derivService.connect(active.account_id, active.is_demo);
 }

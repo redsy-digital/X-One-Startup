@@ -31,7 +31,7 @@ export default function App() {
     derivTokenExpired, derivLoading,
     activeAccount, derivAccounts,
     initAuth, signIn, signUp, signOut,
-    connectDeriv, disconnectDeriv,
+    connectWithPAT, disconnectDeriv, derivError,
     setIsAuthorized, setBalance,
   } = useConnectionStore();
 
@@ -125,8 +125,9 @@ export default function App() {
     return (
       <ConnectDerivScreen
         userEmail={supabaseUser?.email || ""}
-        onConnect={connectDeriv}
+        onConnect={connectWithPAT}
         onSignOut={signOut}
+        error={derivError}
       />
     );
   }
@@ -152,7 +153,7 @@ export default function App() {
             </div>
             <Button
               size="sm"
-              onClick={connectDeriv}
+              onClick={disconnectDeriv}
               className="h-7 text-[10px] bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/40 uppercase font-bold"
             >
               Reconectar Deriv
@@ -440,17 +441,32 @@ function AuthScreen({
   );
 }
 
-// ── Ecrã de Conexão Deriv ─────────────────────────────────────────────────────
+// ── Ecrã de Conexão Deriv (PAT) ──────────────────────────────────────────────
 
 function ConnectDerivScreen({
   userEmail,
   onConnect,
   onSignOut,
+  error: externalError,
 }: {
   userEmail: string;
-  onConnect: () => void;
+  onConnect: (pat: string) => Promise<string | null>;
   onSignOut: () => void;
+  error?: string | null;
 }) {
+  const [pat, setPat] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const handleConnect = async () => {
+    if (!pat.trim()) { setError("Cola o teu token de acesso."); return; }
+    setLoading(true);
+    setError(null);
+    const err = await onConnect(pat.trim());
+    if (err) setError(err);
+    setLoading(false);
+  };
+
   return (
     <div className="min-h-screen bg-[#0a0a0c] flex items-center justify-center p-4">
       <div className="w-full max-w-md space-y-8 animate-in fade-in zoom-in duration-500">
@@ -463,14 +479,13 @@ function ConnectDerivScreen({
         </div>
 
         <NeonCard variant="blue" className="p-8 space-y-6">
-          <div className="space-y-2">
-            <div className="flex items-center justify-between">
-              <h2 className="text-xl font-bold flex items-center gap-2">
-                <ShieldCheck className="w-5 h-5 text-green-500" /> Conta criada
-              </h2>
-              <Badge className="bg-green-500/20 text-green-400 border-green-500/40 text-[9px]">✓ Autenticado</Badge>
+          {/* Conta autenticada */}
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <ShieldCheck className="w-4 h-4 text-green-500" />
+              <p className="text-[11px] text-muted-foreground">{userEmail}</p>
             </div>
-            <p className="text-[11px] text-muted-foreground">{userEmail}</p>
+            <Badge className="bg-green-500/20 text-green-400 border-green-500/40 text-[9px]">✓ Autenticado</Badge>
           </div>
 
           <div className="h-px bg-white/10" />
@@ -481,21 +496,47 @@ function ConnectDerivScreen({
                 <Link2 className="w-4 h-4 text-blue-400" /> Conectar à Deriv
               </h3>
               <p className="text-[11px] text-muted-foreground leading-relaxed">
-                Para operar, precisas de autorizar o acesso à tua conta Deriv via OAuth. Serás redirecionado e voltarás automaticamente.
+                Cola o teu <span className="text-blue-300 font-bold">API Token</span> da Deriv.
+                Gera-o em <span className="text-white font-bold">developers.deriv.com</span> → Dashboard → API Tokens → selecciona scopes <span className="text-white">Read + Trade</span>.
               </p>
             </div>
 
-            <div className="p-3 bg-blue-500/10 border border-blue-500/20 rounded-xl text-[10px] text-blue-300 space-y-1">
-              <p className="font-bold uppercase">O que acontece a seguir:</p>
-              <p>1. Redirecionamento para oauth.deriv.com</p>
-              <p>2. Login/autorização na Deriv</p>
-              <p>3. Regresso automático ao X-ONE</p>
-              <p>4. Bot pronto a operar</p>
+            {(error || externalError) && (
+              <div className="p-3 bg-red-500/10 border border-red-500/30 rounded-lg text-[11px] text-red-400 font-bold">
+                {error || externalError}
+              </div>
+            )}
+
+            <div className="space-y-2">
+              <label className="text-[10px] text-muted-foreground uppercase font-bold tracking-wider ml-1">
+                API Token (pat_...)
+              </label>
+              <div className="relative">
+                <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+                <Input
+                  type="password"
+                  placeholder="pat_0a1b2c3d4e5f..."
+                  value={pat}
+                  onChange={(e) => setPat(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && handleConnect()}
+                  className="bg-black/40 border-white/10 h-12 pl-10 font-mono text-sm focus:border-blue-500/50"
+                />
+              </div>
             </div>
 
-            <Button onClick={onConnect}
-              className="w-full h-12 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 font-black uppercase tracking-widest shadow-xl shadow-blue-500/20 active:scale-95 transition-all">
-              <Link2 className="w-5 h-5 mr-2" /> Conectar Deriv
+            <div className="p-3 bg-blue-500/10 border border-blue-500/20 rounded-xl text-[10px] text-blue-300 space-y-1">
+              <p className="font-bold uppercase">Como gerar o token:</p>
+              <p>1. Entra em <strong>developers.deriv.com</strong></p>
+              <p>2. Dashboard → API Tokens → Create</p>
+              <p>3. Nome: "X-ONE" | Scopes: Read + Trade</p>
+              <p>4. Copia e cola aqui (formato pat_...)</p>
+            </div>
+
+            <Button
+              onClick={handleConnect}
+              disabled={loading || !pat.trim()}
+              className="w-full h-12 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 font-black uppercase tracking-widest shadow-xl shadow-blue-500/20 active:scale-95 transition-all disabled:opacity-50">
+              {loading ? <Loader2 className="w-5 h-5 animate-spin" /> : <><Link2 className="w-5 h-5 mr-2" /> Conectar Deriv</>}
             </Button>
           </div>
         </NeonCard>

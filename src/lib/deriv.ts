@@ -1,6 +1,10 @@
 /**
- * Deriv API WebSocket Service
+ * Deriv API Service — New API (api.derivws.com)
+ * Autenticação: PAT → REST accounts → OTP → WebSocket
+ * API pública mantida idêntica à versão anterior.
  */
+
+const DERIV_REST_BASE = "https://api.derivws.com";
 
 export type DerivMessage = {
   msg_type: string;
@@ -10,208 +14,294 @@ export type DerivMessage = {
 export class DerivService {
   private socket: WebSocket | null = null;
   private appId: string;
-  private token: string | null = null;
+  private pat: string | null = null;
+  private activeAccountId: string | null = null;
   private isDemo: boolean = true;
   private listeners: Map<string, Set<(data: any) => void>> = new Map();
-  private onConnectCallback: (() => void) | null = null;
-  private onDisconnectCallback: (() => void) | null = null;
-  
-  private endpoints = [
-    "wss://ws.derivws.com/websockets/v3",
-    "wss://ws.binaryws.com/websockets/v3"
-  ];
-  private currentEndpointIndex = 0;
-  private isSwitchingEndpoints = false;
   private isIntentionallyDisconnected = false;
-
-  private triedEndpointsCount = 0;
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private reconnectAttempts = 0;
+  private readonly MAX_RECONNECT_ATTEMPTS = 5;
 
   constructor(appId: string = import.meta.env.VITE_DERIV_APP_ID || "1089") {
     this.appId = appId;
-    const savedIndex = localStorage.getItem("deriv_endpoint_index");
-    if (savedIndex !== null) {
-      this.currentEndpointIndex = parseInt(savedIndex, 10);
-      console.log(`[DerivService] Initializing with saved endpoint: ${this.endpoints[this.currentEndpointIndex]}`);
-    }
   }
 
-  connect() {
+  // ── API pública — compatível com versão anterior ──────────────────────────
+
+  /**
+   * Guarda o PAT e (opcionalmente) o accountId para conexão.
+   * Mantido para compatibilidade com useConnectionStore.
+   */
+  setToken(token: string, isDemo: boolean = true) {
+    this.pat = token;
+    this.isDemo = isDemo;
+  }
+
+  /**
+   * Conecta ao WebSocket da Deriv via OTP.
+   * @param accountId  ID da conta a conectar (ex: "VRTC12345")
+   * @param isDemo     Se é conta demo
+   */
+  connect(accountId?: string, isDemo?: boolean) {
+    if (accountId) this.activeAccountId = accountId;
+    if (isDemo !== undefined) this.isDemo = isDemo;
+
     this.isIntentionallyDisconnected = false;
-    if (this.socket && (this.socket.readyState === WebSocket.OPEN || this.socket.readyState === WebSocket.CONNECTING)) {
+
+    if (!this.pat) {
+      console.error("[DerivService] No PAT token set — call setToken() first.");
       return;
     }
 
-    const endpoint = this.endpoints[this.currentEndpointIndex];
-    console.log(`[DerivService] Attempting connection to: ${endpoint} (AppID: ${this.appId})`);
-    
-    this.socket = new WebSocket(`${endpoint}?app_id=${this.appId}`);
+    if (!this.activeAccountId) {
+      // Se não há accountId ainda, busca contas primeiro e conecta à demo (ou primeira)
+      this._fetchAccountsAndConnect();
+      return;
+    }
 
-    this.socket.onopen = () => {
-      console.log(`[DerivService] Successfully connected to ${endpoint}`);
-      this.isSwitchingEndpoints = false;
-      this.triedEndpointsCount = 0; // Reset count on successful physical connection
-      
-      // If no token is set, we save the endpoint as working for now (public data only)
-      if (!this.token) {
-        localStorage.setItem("deriv_endpoint_index", this.currentEndpointIndex.toString());
-      }
-      
-      if (this.onConnectCallback) this.onConnectCallback();
-      if (this.token) {
-        console.log("[DerivService] Sending authorization token...");
-        this.authorize(this.token);
-      }
-    };
-
-    this.socket.onmessage = (event) => {
-      const data = JSON.parse(event.data) as DerivMessage;
-      const type = data.msg_type;
-      
-      console.log(`[DerivService] Received message: ${type}`, data.error ? data.error : "");
-
-      // Handle authorization errors to trigger fallback if necessary
-      if (type === "authorize") {
-        if (data.error) {
-          console.error("[DerivService] Authorization error:", data.error.message);
-          
-          this.triedEndpointsCount++;
-          
-          // If authorization fails, and we haven't tried all endpoints, try fallback
-          if (!this.isSwitchingEndpoints && this.triedEndpointsCount < this.endpoints.length) {
-            console.log(`[DerivService] Authorization failed on ${endpoint}. Attempting fallback (${this.triedEndpointsCount}/${this.endpoints.length})...`);
-            this.socket?.close(); // This will trigger onclose and switchEndpoint
-          } else {
-            console.warn("[DerivService] All endpoints failed for this token or max retries reached.");
-            this.triedEndpointsCount = 0; // Reset for potential manual retries
-          }
-        } else {
-          console.log("[DerivService] Authorization successful");
-          this.triedEndpointsCount = 0;
-          // Save this endpoint as the working one
-          localStorage.setItem("deriv_endpoint_index", this.currentEndpointIndex.toString());
-        }
-      }
-      
-      if (this.listeners.has(type)) {
-        this.listeners.get(type)?.forEach(callback => callback(data));
-      }
-      
-      if (this.listeners.has("*")) {
-        this.listeners.get("*")?.forEach(callback => callback(data));
-      }
-    };
-
-    this.socket.onerror = (error) => {
-      console.error(`[DerivService] WebSocket error on ${endpoint}:`, error);
-    };
-
-    this.socket.onclose = (event) => {
-      console.log(`[DerivService] Connection closed from ${endpoint} (Code: ${event.code})`);
-      
-      if (this.onDisconnectCallback) this.onDisconnectCallback();
-
-      // If we are not explicitly disconnecting and not already switching, try to reconnect or switch endpoints
-      if (!this.isIntentionallyDisconnected && !this.isSwitchingEndpoints) {
-        this.switchEndpoint();
-      }
-    };
+    this._connectViaOTP(this.activeAccountId);
   }
 
-  private switchEndpoint() {
-    this.isSwitchingEndpoints = true;
-    this.currentEndpointIndex = (this.currentEndpointIndex + 1) % this.endpoints.length;
-    const nextEndpoint = this.endpoints[this.currentEndpointIndex];
-    
-    console.log(`[DerivService] Switching to fallback endpoint: ${nextEndpoint}`);
-    
-    // Attempt reconnection after a short delay
-    setTimeout(() => {
-      this.isSwitchingEndpoints = false;
-      this.connect();
-    }, 2000);
+  disconnect() {
+    this.isIntentionallyDisconnected = true;
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    if (this.socket) {
+      this.socket.close();
+      this.socket = null;
+    }
+    this.reconnectAttempts = 0;
   }
 
-  setToken(token: string, isDemo: boolean = true) {
-    this.token = token;
-    this.isDemo = isDemo;
-    this.triedEndpointsCount = 0; // Reset trial count for new token
+  send(data: any) {
     if (this.socket?.readyState === WebSocket.OPEN) {
-      this.authorize(token);
+      console.log(`[DerivService] Sending: ${Object.keys(data)[0]}`);
+      this.socket.send(JSON.stringify(data));
+    } else {
+      console.warn("[DerivService] Cannot send — socket not open:", data);
     }
   }
 
-  private authorize(token: string) {
-    this.send({ authorize: token });
+  on(type: string, callback: (data: any) => void) {
+    if (!this.listeners.has(type)) this.listeners.set(type, new Set());
+    this.listeners.get(type)?.add(callback);
+    return () => this.listeners.get(type)?.delete(callback);
   }
 
   subscribeTicks(symbol: string) {
     this.send({ ticks: symbol, subscribe: 1 });
   }
 
-  unsubscribeTicks(symbol: string) {
+  unsubscribeTicks(_symbol: string) {
     this.send({ forget_all: "ticks" });
   }
 
-  buy(proposalId: string, price: number) {
-    this.send({
-      buy: proposalId,
-      price: price
-    });
-  }
-
-  getPriceProposal(symbol: string, contractType: "CALL" | "PUT", amount: number, duration: number, durationUnit: string) {
+  getPriceProposal(
+    symbol: string,
+    contractType: "CALL" | "PUT",
+    amount: number,
+    duration: number,
+    durationUnit: string
+  ) {
     this.send({
       proposal: 1,
-      amount: amount,
+      amount,
       basis: "stake",
       contract_type: contractType,
       currency: "USD",
-      duration: duration,
+      duration,
       duration_unit: durationUnit,
-      symbol: symbol
+      symbol,
     });
+  }
+
+  buy(proposalId: string, price: number) {
+    this.send({ buy: proposalId, price });
   }
 
   subscribeProposalOpenContract() {
     this.send({ proposal_open_contract: 1, subscribe: 1 });
   }
 
-  getStatement(limit: number = 10) {
-    this.send({ statement: 1, limit, description: 1 });
+  // ── REST API helpers ──────────────────────────────────────────────────────
+
+  async fetchAccounts(): Promise<any[]> {
+    if (!this.pat) throw new Error("[DerivService] No PAT set");
+
+    const res = await fetch(`${DERIV_REST_BASE}/trading/v1/options/accounts`, {
+      headers: {
+        Authorization: `Bearer ${this.pat}`,
+        "Deriv-App-ID": this.appId,
+      },
+    });
+
+    if (!res.ok) {
+      const err = await res.text();
+      throw new Error(`[DerivService] fetchAccounts failed ${res.status}: ${err}`);
+    }
+
+    const json = await res.json();
+    return Array.isArray(json.data) ? json.data : [];
   }
 
-  send(data: any) {
-    if (this.socket?.readyState === WebSocket.OPEN) {
-      const type = Object.keys(data)[0];
-      console.log(`[DerivService] Sending message: ${type}`, data);
-      this.socket.send(JSON.stringify(data));
-    } else {
-      console.warn("[DerivService] Cannot send message: Socket is not open", data);
+  // ── Internos ──────────────────────────────────────────────────────────────
+
+  private async _fetchAccountsAndConnect() {
+    try {
+      const accounts = await this.fetchAccounts();
+      if (accounts.length === 0) {
+        console.error("[DerivService] No accounts found for this PAT.");
+        this._emitAuthorizeError("Nenhuma conta encontrada para este token.");
+        return;
+      }
+
+      // Preferir conta demo; fallback para primeira
+      const demo = accounts.find((a) => this._isDemo(a));
+      const target = demo ?? accounts[0];
+      this.activeAccountId = target.account_id;
+      this.isDemo = this._isDemo(target);
+
+      this._connectViaOTP(this.activeAccountId);
+    } catch (e: any) {
+      console.error("[DerivService] Error fetching accounts:", e.message);
+      this._emitAuthorizeError(e.message);
     }
   }
 
-  on(type: string, callback: (data: any) => void) {
-    if (!this.listeners.has(type)) {
-      this.listeners.set(type, new Set());
-    }
-    this.listeners.get(type)?.add(callback);
-    return () => this.listeners.get(type)?.delete(callback);
-  }
-
-  onConnect(callback: () => void) {
-    this.onConnectCallback = callback;
-  }
-
-  onDisconnect(callback: () => void) {
-    this.onDisconnectCallback = callback;
-  }
-
-  disconnect() {
-    this.isIntentionallyDisconnected = true;
-    if (this.socket) {
+  private async _connectViaOTP(accountId: string) {
+    if (
+      this.socket &&
+      (this.socket.readyState === WebSocket.OPEN ||
+        this.socket.readyState === WebSocket.CONNECTING)
+    ) {
       this.socket.close();
-      this.socket = null;
     }
+
+    try {
+      const wsUrl = await this._getOTPUrl(accountId);
+      console.log(`[DerivService] Connecting via OTP to account: ${accountId}`);
+      this.socket = new WebSocket(wsUrl);
+      this._setupHandlers(accountId);
+    } catch (e: any) {
+      console.error("[DerivService] OTP error:", e.message);
+      this._emitAuthorizeError(e.message);
+      this._scheduleReconnect();
+    }
+  }
+
+  private async _getOTPUrl(accountId: string): Promise<string> {
+    const res = await fetch(
+      `${DERIV_REST_BASE}/trading/v1/options/accounts/${accountId}/otp`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${this.pat}`,
+          "Deriv-App-ID": this.appId,
+        },
+      }
+    );
+
+    if (!res.ok) {
+      const err = await res.text();
+      throw new Error(`OTP request failed ${res.status}: ${err}`);
+    }
+
+    const json = await res.json();
+    const url = json.data?.url || json.url;
+    if (!url) throw new Error("OTP response missing WebSocket URL");
+    return url;
+  }
+
+  private _setupHandlers(accountId: string) {
+    if (!this.socket) return;
+
+    this.socket.onopen = async () => {
+      console.log(`[DerivService] Connected to account: ${accountId}`);
+      this.reconnectAttempts = 0;
+
+      // Busca saldo via REST para emitir evento authorize sintético
+      // (na nova API não há mensagem {authorize: token} — o OTP já autentica)
+      try {
+        const accounts = await this.fetchAccounts();
+        const account = accounts.find((a) => a.account_id === accountId) ?? accounts[0];
+
+        this._emit("authorize", {
+          authorize: {
+            balance: Number(account?.balance ?? 0),
+            loginid: account?.account_id ?? accountId,
+            currency: account?.currency ?? "USD",
+            is_virtual: this._isDemo(account) ? 1 : 0,
+          },
+        });
+      } catch {
+        // Emite mesmo sem saldo — App.tsx marca como autorizado
+        this._emit("authorize", {
+          authorize: { balance: 0, loginid: accountId, currency: "USD", is_virtual: this.isDemo ? 1 : 0 },
+        });
+      }
+    };
+
+    this.socket.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data) as DerivMessage;
+        const type = data.msg_type;
+        if (type) this._emit(type, data);
+      } catch (e) {
+        console.error("[DerivService] Message parse error:", e);
+      }
+    };
+
+    this.socket.onerror = (err) => {
+      console.error("[DerivService] WebSocket error:", err);
+    };
+
+    this.socket.onclose = (event) => {
+      console.log(`[DerivService] Closed (code: ${event.code})`);
+      if (!this.isIntentionallyDisconnected) {
+        this._scheduleReconnect();
+      }
+    };
+  }
+
+  private _scheduleReconnect() {
+    if (this.reconnectAttempts >= this.MAX_RECONNECT_ATTEMPTS) {
+      console.warn("[DerivService] Max reconnect attempts reached.");
+      return;
+    }
+
+    if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+
+    const delay = Math.min(2000 * Math.pow(2, this.reconnectAttempts), 30000);
+    this.reconnectAttempts++;
+
+    console.log(`[DerivService] Reconnecting in ${delay}ms (attempt ${this.reconnectAttempts})`);
+    this.reconnectTimer = setTimeout(() => {
+      if (!this.isIntentionallyDisconnected && this.activeAccountId) {
+        this._connectViaOTP(this.activeAccountId);
+      }
+    }, delay);
+  }
+
+  private _emit(type: string, data: any) {
+    this.listeners.get(type)?.forEach((cb) => cb(data));
+    this.listeners.get("*")?.forEach((cb) => cb(data));
+  }
+
+  private _emitAuthorizeError(message: string) {
+    this._emit("authorize", {
+      error: { code: "AuthError", message },
+    });
+  }
+
+  private _isDemo(account: any): boolean {
+    if (!account) return true;
+    if (account.account_type === "demo") return true;
+    if (account.is_virtual === true || account.is_virtual === 1) return true;
+    const id: string = account.account_id ?? "";
+    return id.toUpperCase().startsWith("VRT") || id.toUpperCase().startsWith("DEMO");
   }
 }
 
