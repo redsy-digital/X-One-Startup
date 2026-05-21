@@ -55,7 +55,7 @@ export const useConnectionStore = create<ConnectionState>((set, get) => ({
   isDemo: true,
   isAuthorized: false,
   derivTokenExpired: false,
-  derivLoading: false,
+  derivLoading: true,   // true inicial — evita flash do ConnectDerivScreen
   derivError: null,
 
   // Legado
@@ -74,7 +74,7 @@ export const useConnectionStore = create<ConnectionState>((set, get) => ({
       set({ supabaseUser: session.user, isLoggedIn: true, authLoading: false });
       await _loadDerivConnection(set);
     } else {
-      set({ authLoading: false });
+      set({ authLoading: false, derivLoading: false });
     }
 
     supabase.auth.onAuthStateChange(async (event, session) => {
@@ -241,7 +241,7 @@ async function _loadDerivConnection(set: any) {
     .eq("is_active", true)
     .single();
 
-  if (error || !data) return;
+  if (error || !data) { set({ derivLoading: false }); return; }
 
   const accounts: DerivAccount[] = data.accounts ?? [{
     account_id: data.account_id,
@@ -258,6 +258,7 @@ async function _loadDerivConnection(set: any) {
     activeAccount: active,
     isDemo: active.is_demo,
     token: pat,
+    derivLoading: false,  // conexão carregada — sem flash
   });
 
   // Reconecta automaticamente

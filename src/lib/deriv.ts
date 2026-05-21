@@ -114,7 +114,7 @@ export class DerivService {
       currency: "USD",
       duration,
       duration_unit: durationUnit,
-      symbol,
+      underlying_symbol: symbol,   // renamed from "symbol" in new Deriv API
     });
   }
 
