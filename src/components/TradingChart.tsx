@@ -17,7 +17,7 @@ interface TradingChartProps {
   symbol: string;
 }
 
-export const TradingChart = ({ candles, symbol }: TradingChartProps) => {
+const TradingChartComponent = ({ candles, symbol }: TradingChartProps) => {
   const chartData = useMemo(() => {
     return candles.map(c => ({
       ...c,
@@ -77,3 +77,6 @@ export const TradingChart = ({ candles, symbol }: TradingChartProps) => {
     </div>
   );
 };
+
+// React.memo: evita re-render quando candles não mudou
+export const TradingChart = React.memo(TradingChartComponent);

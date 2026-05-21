@@ -58,98 +58,91 @@ export function useTradingEngine(
   const lastActionTimeRef = useRef(0);
   const lastCandleTimeRef = useRef(0);
   const lastSignalRef = useRef<TradeSignal | null>(null);
-
-  // Ref para consecutiveLosses para uso dentro de closures assíncronos
   const consecutiveLossesRef = useRef(0);
-  // Ref para cooldownAfterLoss (evitar stale closure)
   const cooldownAfterLossRef = useRef(cooldownAfterLoss);
   useEffect(() => { cooldownAfterLossRef.current = cooldownAfterLoss; }, [cooldownAfterLoss]);
 
   const structure = useMarketStructure();
-
   useEffect(() => { lastSignalRef.current = lastSignal; }, [lastSignal]);
 
-  // Safety timeout
+  // ── Safety timeout — CORRIGIDO: usa isProcessing (state), não ref ────────
+  // React não rastreia mudanças em refs no dependency array.
+  // Com ref: o timeout NUNCA disparava → isProcessingTradeRef ficava stuck em true
+  // → engine saía cedo → setLastSignal nunca chamado → UI congelava.
   useEffect(() => {
-    if (!isProcessingTradeRef.current) return;
+    if (!isProcessing) return;
     const t = setTimeout(() => {
-      if (isProcessingTradeRef.current) {
-        console.warn("[TradingEngine] Trade processing stuck — resetting.");
-        isProcessingTradeRef.current = false;
-        setIsProcessing(false);
-      }
+      console.warn("[TradingEngine] Trade stuck — resetting.");
+      isProcessingTradeRef.current = false;
+      setIsProcessing(false);
+      setError("Timeout: trade sem resposta. Bot a continuar.");
     }, 15000);
     return () => clearTimeout(t);
-  }, [isProcessingTradeRef.current]);
+  }, [isProcessing]); // ← STATE, não ref
 
   // Reset ao parar o bot
   useEffect(() => {
     if (!isBotRunning) {
       isProcessingTradeRef.current = false;
       setIsProcessing(false);
+      setError(null);
     }
   }, [isBotRunning]);
 
-  // Trade manual (botões CALL/PUT)
+  // Trade manual
   const placeTrade = useCallback(
     (type: "CALL" | "PUT") => {
       if (!isAuthorized || isProcessingTradeRef.current) return;
       setError(null);
       isProcessingTradeRef.current = true;
       setIsProcessing(true);
-      // Trades manuais usam o stake base, não o currentStake (que pode estar em step Martingale)
       derivService.getPriceProposal(symbol, type, stake, 5, "t");
     },
     [isAuthorized, symbol, stake]
   );
 
-  // Engine automática — executa a cada novo candle
+  // ── Engine automática ─────────────────────────────────────────────────────
   useEffect(() => {
-    if (!isBotRunning || isProcessingTradeRef.current || candles.length < 50) return;
+    if (!isBotRunning || candles.length < 50) return;
 
     const lastCandle = candles[candles.length - 1];
     if (lastCandle.time === lastCandleTimeRef.current) return;
     lastCandleTimeRef.current = lastCandle.time;
 
+    // CORRIGIDO: análise e UI actualizam SEMPRE — mesmo que esteja a processar trade
+    // Antes: a guard isProcessingTradeRef estava ANTES do setLastSignal
+    // → confidence meter congelava enquanto trade estava a processar
+    const analysis = analyzeMarket(candles, symbol, strategyProfile);
+    setLastSignal(analysis);
+
+    // A partir daqui: só executa novo trade se livre
+    if (isProcessingTradeRef.current) return;
+
     if (structure.lastTradeResultRef.current === "LOST") {
       structure.candlesSinceLastLossRef.current += 1;
     }
 
-    // Análise com o perfil ativo
-    const analysis = analyzeMarket(candles, symbol, strategyProfile);
-    setLastSignal(analysis);
-
     structure.evaluateStructure(candles, analysis);
 
-    // ── Filtros de disciplina e qualidade ──
     if (!structure.isEntryAllowed(analysis, minConfidence)) return;
 
-    // Cooldown padrão
     const now = Date.now();
     if (now - lastActionTimeRef.current < cooldownSeconds * 1000) return;
 
-    // ── maxConsecutiveLosses: verifica ANTES de executar ──
-    // Se já atingiu o limite, aplica cooldown extra antes de tentar de novo
     if (consecutiveLossesRef.current >= maxConsecutiveLosses) {
       const cooldownMs = cooldownAfterLossRef.current * 1000;
-      if (now - lastActionTimeRef.current < cooldownMs) {
-        // Ainda em cooldown pós-perdas — bloqueia silenciosamente
-        return;
-      }
-      // Cooldown expirou — reseta e deixa operar
+      if (now - lastActionTimeRef.current < cooldownMs) return;
       consecutiveLossesRef.current = 0;
     }
 
-    // Executa o trade
     isProcessingTradeRef.current = true;
     setIsProcessing(true);
     lastActionTimeRef.current = now;
     structure.recordTrade(analysis.type as "CALL" | "PUT");
-
     derivService.getPriceProposal(symbol, analysis.type as "CALL" | "PUT", currentStake, 5, "t");
   }, [candles, isBotRunning, currentStake, minConfidence, cooldownSeconds, strategyProfile, maxConsecutiveLosses]);
 
-  // Listeners WebSocket
+  // ── Listeners WebSocket ───────────────────────────────────────────────────
   useEffect(() => {
     const unsubProposal = derivService.on("proposal", (data) => {
       if (data.error) {
@@ -177,8 +170,19 @@ export function useTradingEngine(
 
       const buy = data.buy;
       if (buy) {
+        const contractId = String(buy.contract_id);
+
+        // CORRIGIDO: subscrever ao contrato ESPECÍFICO (mais fiável na nova API)
+        // A subscrição global {proposal_open_contract: 1, subscribe: 1} pode não
+        // retornar eventos de liquidação na nova API Deriv
+        derivService.send({
+          proposal_open_contract: 1,
+          contract_id: contractId,
+          subscribe: 1,
+        });
+
         saveTrade({
-          id: String(buy.contract_id),
+          id: contractId,
           time: Date.now(),
           symbol,
           type: structure.lastTradeTypeRef.current || "CALL",
@@ -206,7 +210,7 @@ export function useTradingEngine(
       saveTrade({
         id: String(contract.contract_id),
         time: contract.date_start * 1000,
-        symbol: contract.display_name,
+        symbol: contract.display_name || symbol,
         type: contract.contract_type === "CALL" || contract.contract_type === "CALLE" ? "CALL" : "PUT",
         stake: contract.buy_price,
         status: isWin ? "WON" : "LOST",
@@ -219,12 +223,10 @@ export function useTradingEngine(
         const newConsec = isWin ? 0 : prev.consecutiveLosses + 1;
         consecutiveLossesRef.current = newConsec;
 
-        // ── maxConsecutiveLosses: verificação pós-liquidação ──
-        // Para o bot e aplica cooldown (o cooldown é tratado no próximo candle)
         if (!isWin && isBotRunningRef.current && newConsec >= maxConsecutiveLosses) {
-          const reason = `${maxConsecutiveLosses} perdas consecutivas atingidas — cooldown de ${cooldownAfterLossRef.current}s`;
+          const reason = `${maxConsecutiveLosses} perdas consecutivas — cooldown de ${cooldownAfterLossRef.current}s`;
           console.warn(`[TradingEngine] ${reason}`);
-          lastActionTimeRef.current = Date.now(); // inicia o cooldown
+          lastActionTimeRef.current = Date.now();
           onForceStop(reason);
         }
 
