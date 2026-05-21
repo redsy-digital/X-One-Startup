@@ -2,6 +2,7 @@ import { create } from "zustand";
 import { User } from "@supabase/supabase-js";
 import { supabase } from "../lib/supabase";
 import { derivService } from "../lib/deriv";
+import { useMarketStore } from "./useMarketStore";
 import { DerivAccount } from "../lib/derivOAuth";
 
 // ── Estado ────────────────────────────────────────────────────────────────────
@@ -185,6 +186,9 @@ export const useConnectionStore = create<ConnectionState>((set, get) => ({
       console.warn("[ConnectionStore] Conta não encontrada para isDemo:", isDemo);
       return;
     }
+
+    // Limpar dados de mercado — evita gráfico congelado com candles da conta anterior
+    useMarketStore.getState().resetMarketData();
 
     set({
       activeAccount: target,

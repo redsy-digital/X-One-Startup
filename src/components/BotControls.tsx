@@ -77,13 +77,7 @@ export const BotControls = () => {
     isBotRunningRef
   );
 
-  // Subscribe ticks on symbol change
-  useEffect(() => {
-    if (isAuthorized) {
-      derivService.unsubscribeTicks(symbol);
-      derivService.subscribeTicks(symbol);
-    }
-  }, [symbol, isAuthorized]);
+  // Ticks geridos centralmente em App.tsx — sem subscrição dupla aqui
 
   // Backtest
   const runBacktest = () => {

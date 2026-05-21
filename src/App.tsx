@@ -53,38 +53,48 @@ export default function App() {
     return () => window.removeEventListener("trade_history_updated", onUpdate);
   }, [supabaseUser]);
 
-  // ── Listeners WebSocket ───────────────────────────────────────────────────
+  // ── Listeners permanentes (montados uma vez) ─────────────────────────────
   useEffect(() => {
-    if (!isAuthorized) return;
-
-    const unsubBalance = derivService.on("balance", (data: any) => {
-      if (!data.error) setBalance(data.balance.balance);
-    });
-
+    // Ticks — sempre activo
     const unsubTick = derivService.on("tick", (data: any) => {
       if (data.tick) addTick({ time: data.tick.epoch, price: data.tick.quote });
     });
 
+    // Saldo — sempre activo
+    const unsubBalance = derivService.on("balance", (data: any) => {
+      if (!data.error) setBalance(data.balance.balance);
+    });
+
+    // Contratos abertos — sempre activo
     const unsubPOC = derivService.on("proposal_open_contract", (data: any) => {
       if (data.proposal_open_contract?.is_sold)
         derivService.send({ balance: 1, subscribe: 1 });
     });
 
-    return () => { unsubBalance(); unsubTick(); unsubPOC(); };
-  }, [isAuthorized, timeframe]);
-
-  // ── Listeners de autorização ──────────────────────────────────────────────
-  useEffect(() => {
+    // Autorização — ponto central para iniciar subscrições
     const unsubAuth = derivService.on("authorize", (data: any) => {
       if (!data.error) {
         setIsAuthorized(true);
         setBalance(data.authorize.balance);
+        // Inicia subscrições após autorização
         derivService.subscribeProposalOpenContract();
         derivService.send({ balance: 1, subscribe: 1 });
         derivService.subscribeTicks(symbol);
       }
     });
-    return () => unsubAuth();
+
+    return () => { unsubTick(); unsubBalance(); unsubPOC(); unsubAuth(); };
+  }, []); // montado UMA vez — sem dependências que causem re-mount
+
+  // ── Re-subscrever ticks quando symbol muda (já autorizado) ────────────────
+  const isAuthorizedRef = React.useRef(false);
+  useEffect(() => { isAuthorizedRef.current = isAuthorized; }, [isAuthorized]);
+
+  useEffect(() => {
+    // Só re-subscreve se já autorizado (na 1ª auth, o handler authorize trata disto)
+    if (!isAuthorizedRef.current) return;
+    derivService.unsubscribeTicks(symbol);
+    derivService.subscribeTicks(symbol);
   }, [symbol]);
 
   // ── Valores derivados ─────────────────────────────────────────────────────
