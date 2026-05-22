@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
 import confetti from "canvas-confetti";
+import { logger } from "../lib/logger";
 
 interface RiskManagerConfig {
   stake: number;
@@ -51,6 +52,7 @@ export function useRiskManager(
     const currentProfit = balance - initialBalance;
 
     if (currentProfit >= config.targetProfit) {
+      logger.risk(`🎯 Take Profit atingido! Sessão: +$${currentProfit.toFixed(2)}`);
       setIsBotRunning(false);
       setShowModal({ show: true, type: "profit", amount: currentProfit });
       confetti({
@@ -60,6 +62,7 @@ export function useRiskManager(
         colors: ["#a855f7", "#3b82f6", "#22c55e"],
       });
     } else if (currentProfit <= -config.stopLoss) {
+      logger.risk(`⛔ Stop Loss atingido. Sessão: $${currentProfit.toFixed(2)}`);
       setIsBotRunning(false);
       setShowModal({ show: true, type: "loss", amount: currentProfit });
     }
@@ -100,8 +103,10 @@ export function useRiskManager(
 
     if (config.useMartingale && martingaleStep < config.maxMartingaleSteps) {
       const nextStep = martingaleStep + 1;
+      const nextStakeVal = config.stake * Math.pow(config.martingaleMultiplier, nextStep);
+      logger.risk(`Martingale step ${nextStep}/${config.maxMartingaleSteps} | Próxima stake: $${nextStakeVal.toFixed(2)}`);
       setMartingaleStep(nextStep);
-      setCurrentStake(config.stake * Math.pow(config.martingaleMultiplier, nextStep));
+      setCurrentStake(nextStakeVal);
     } else {
       setMartingaleStep(0);
       setCurrentStake(config.stake);

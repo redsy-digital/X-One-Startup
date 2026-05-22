@@ -1,3 +1,5 @@
+import { logger } from "./logger";
+
 /**
  * Deriv API Service — New API (api.derivws.com)
  * Autenticação: PAT → REST accounts → OTP → WebSocket
@@ -149,6 +151,7 @@ export class DerivService {
     this._closeSocket(); // fecha socket ANTERIOR sem disparar reconnect (handlers já removidos)
 
     try {
+      logger.system(`Conectando à Deriv... conta: ${accountId}`);
       console.log(`[Deriv] Getting OTP for ${accountId} (epoch ${epoch})`);
       const wsUrl = await this._getOTPUrl(accountId);
 
@@ -198,9 +201,12 @@ export class DerivService {
         const accounts = await this.fetchAccounts();
         if (epoch !== this._epoch) return;
         const account = accounts.find((a) => a.account_id === accountId) ?? accounts[0];
+        const balance = Number(account?.balance ?? 0);
+        const accountType = this._isDemo(account) ? "Demo" : "Real";
+        logger.system(`✓ Autorizado | ${accountId} [${accountType}] | Saldo: $${balance.toFixed(2)}`);
         this._emit("authorize", {
           authorize: {
-            balance: Number(account?.balance ?? 0),
+            balance,
             loginid: account?.account_id ?? accountId,
             currency: account?.currency ?? "USD",
             is_virtual: this._isDemo(account) ? 1 : 0,
@@ -208,6 +214,7 @@ export class DerivService {
         });
       } catch {
         if (epoch !== this._epoch) return;
+        logger.system(`✓ Autorizado | ${accountId} | (saldo não disponível)`);
         this._emit("authorize", {
           authorize: { balance: 0, loginid: accountId, currency: "USD", is_virtual: this.isDemo ? 1 : 0 },
         });
@@ -232,6 +239,7 @@ export class DerivService {
     this.socket.onclose = (event) => {
       if (epoch !== this._epoch) return; // ignorar close de socket antigo
       console.log(`[Deriv] Closed (code ${event.code}, epoch ${epoch})`);
+      if (!this.isIntentionallyDisconnected) logger.system(`WebSocket desconectado (code ${event.code}) — a reconectar...`);
       if (!this.isIntentionallyDisconnected) this._scheduleReconnect(epoch);
     };
   }
@@ -277,6 +285,7 @@ export class DerivService {
   }
 
   private _emitAuthError(message: string) {
+    logger.error(`Erro de autorização: ${message}`);
     this._emit("authorize", { error: { code: "AuthError", message } });
   }
 

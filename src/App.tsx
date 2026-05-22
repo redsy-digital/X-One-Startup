@@ -17,6 +17,7 @@ import { Input } from "./components/ui/input";
 import { motion, AnimatePresence } from "motion/react";
 import { Sheet, SheetContent, SheetTrigger } from "./components/ui/sheet";
 import { HistoryPanel } from "./components/HistoryPanel";
+import { LogsPanel } from "./components/LogsPanel";
 import { SYMBOLS } from "./constants";
 import { useConnectionStore, useBotStore, useMarketStore, useHistoryStore } from "./store";
 
@@ -201,6 +202,8 @@ export default function App() {
           <div className="p-4 md:p-8 space-y-6 md:space-y-8 max-w-7xl mx-auto w-full">
             {activeTab === "Histórico" ? (
               <HistoryPanel />
+            ) : activeTab === "Logs" ? (
+              <LogsPanel />
             ) : (
               <>
                 {/* Stats */}

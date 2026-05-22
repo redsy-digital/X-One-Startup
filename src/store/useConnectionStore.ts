@@ -2,6 +2,7 @@ import { create } from "zustand";
 import { User } from "@supabase/supabase-js";
 import { supabase } from "../lib/supabase";
 import { derivService } from "../lib/deriv";
+import { logger } from "../lib/logger";
 import { useMarketStore } from "./useMarketStore";
 import { DerivAccount } from "../lib/derivOAuth";
 
@@ -165,6 +166,9 @@ export const useConnectionStore = create<ConnectionState>((set, get) => ({
         token: pat,
       });
 
+      const accType = demoAccount.is_demo ? "Demo" : "Real";
+      logger.system(`Token PAT aceite | ${accounts.length} conta(s) | A conectar à ${accType}...`);
+
       // 6. Conectar WebSocket via OTP
       derivService.connect(demoAccount.account_id, demoAccount.is_demo);
 
@@ -189,6 +193,8 @@ export const useConnectionStore = create<ConnectionState>((set, get) => ({
 
     // Limpar dados de mercado — evita gráfico congelado com candles da conta anterior
     useMarketStore.getState().resetMarketData();
+    const targetType = isDemo ? "Demo" : "Real";
+    logger.system(`A trocar para conta ${targetType}: ${target.account_id}`);
 
     set({
       activeAccount: target,
@@ -207,6 +213,7 @@ export const useConnectionStore = create<ConnectionState>((set, get) => ({
   disconnectDeriv: async () => {
     const { supabaseUser } = get();
 
+    logger.system("Deriv desconectado pelo utilizador");
     derivService.disconnect();
     set({
       derivAccounts: [], activeAccount: null,

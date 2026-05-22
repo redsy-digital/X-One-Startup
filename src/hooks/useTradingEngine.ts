@@ -3,6 +3,7 @@ import { derivService } from "../lib/deriv";
 import { analyzeMarket } from "../lib/strategy";
 import { saveTrade } from "../lib/storage";
 import { Candle, TradeSignal, StrategyProfile } from "../types";
+import { logger } from "../lib/logger";
 import { useMarketStructure } from "./useMarketStructure";
 
 interface TradingEngineConfig {
@@ -109,14 +110,27 @@ export function useTradingEngine(
     if (lastCandle.time === lastCandleTimeRef.current) return;
     lastCandleTimeRef.current = lastCandle.time;
 
-    // CORRIGIDO: análise e UI actualizam SEMPRE — mesmo que esteja a processar trade
-    // Antes: a guard isProcessingTradeRef estava ANTES do setLastSignal
-    // → confidence meter congelava enquanto trade estava a processar
     const analysis = analyzeMarket(candles, symbol, strategyProfile);
     setLastSignal(analysis);
 
+    // Log do sinal em cada novo candle
+    const mkt = analysis.indicators.marketCondition;
+    const fr = analysis.indicators.trendFreshnessScore?.toFixed(1) ?? "—";
+    const tm = analysis.indicators.timingQuality?.toFixed(1) ?? "—";
+    if (analysis.type === "NEUTRAL") {
+      logger.signal(`${symbol} | ${mkt} | NEUTRO | ${analysis.indicators.reason}`);
+    } else {
+      logger.signal(
+        `${symbol} | ${mkt} | ${analysis.type} | Conf: ${analysis.confidence}% | ` +
+        `Fresh: ${fr} | Timing: ${tm} | ${analysis.indicators.reason}`
+      );
+    }
+
     // A partir daqui: só executa novo trade se livre
-    if (isProcessingTradeRef.current) return;
+    if (isProcessingTradeRef.current) {
+      logger.block("A processar trade anterior — aguardando resultado");
+      return;
+    }
 
     if (structure.lastTradeResultRef.current === "LOST") {
       structure.candlesSinceLastLossRef.current += 1;
@@ -124,17 +138,53 @@ export function useTradingEngine(
 
     structure.evaluateStructure(candles, analysis);
 
-    if (!structure.isEntryAllowed(analysis, minConfidence)) return;
+    // Verificações inline com log específico por motivo
+    if (analysis.type === "NEUTRAL") return;
+
+    if (
+      structure.lastTradeResultRef.current === "LOST" &&
+      analysis.type === structure.lastTradeTypeRef.current &&
+      structure.lastTradeStructureIdRef.current === structure.currentStructureIdRef.current
+    ) {
+      logger.block(`Pós-perda: mesma direção (${analysis.type}) na mesma estrutura — aguardando nova`);
+      return;
+    }
+
+    const freshness = analysis.indicators.trendFreshnessScore ?? 0;
+    if (freshness < 4) {
+      logger.block(`Freshness baixo: ${freshness.toFixed(1)}/10 (mín: 4.0) — tendência madura`);
+      return;
+    }
+
+    const timing = analysis.indicators.timingQuality ?? 0;
+    if (timing < 5) {
+      logger.block(`Timing baixo: ${timing.toFixed(1)}/10 (mín: 5.0) — entrada tardia`);
+      return;
+    }
+
+    if (analysis.confidence < minConfidence) {
+      logger.block(`Confiança insuficiente: ${analysis.confidence}% < mínimo ${minConfidence}%`);
+      return;
+    }
 
     const now = Date.now();
-    if (now - lastActionTimeRef.current < cooldownSeconds * 1000) return;
+    const cooldownRemaining = cooldownSeconds * 1000 - (now - lastActionTimeRef.current);
+    if (cooldownRemaining > 0) {
+      logger.block(`Cooldown: ${Math.ceil(cooldownRemaining / 1000)}s restantes`);
+      return;
+    }
 
     if (consecutiveLossesRef.current >= maxConsecutiveLosses) {
       const cooldownMs = cooldownAfterLossRef.current * 1000;
-      if (now - lastActionTimeRef.current < cooldownMs) return;
+      if (now - lastActionTimeRef.current < cooldownMs) {
+        const rem = Math.ceil((cooldownMs - (now - lastActionTimeRef.current)) / 1000);
+        logger.risk(`Cooldown pós-perdas: ${consecutiveLossesRef.current} perdas | ${rem}s restantes`);
+        return;
+      }
       consecutiveLossesRef.current = 0;
     }
 
+    logger.trade(`▶ Proposta ${analysis.type} | $${currentStake.toFixed(2)} | ${symbol} | Conf: ${analysis.confidence}%`);
     isProcessingTradeRef.current = true;
     setIsProcessing(true);
     lastActionTimeRef.current = now;
@@ -146,6 +196,7 @@ export function useTradingEngine(
   useEffect(() => {
     const unsubProposal = derivService.on("proposal", (data) => {
       if (data.error) {
+        logger.error(`Proposta recusada: ${data.error.message}`);
         setError(data.error.message);
         isProcessingTradeRef.current = false;
         setIsProcessing(false);
@@ -171,6 +222,7 @@ export function useTradingEngine(
       const buy = data.buy;
       if (buy) {
         const contractId = String(buy.contract_id);
+        logger.trade(`✓ Compra confirmada | ID: ${contractId} | Preço: $${buy.buy_price?.toFixed(2) ?? "—"}`);
 
         // CORRIGIDO: subscrever ao contrato ESPECÍFICO (mais fiável na nova API)
         // A subscrição global {proposal_open_contract: 1, subscribe: 1} pode não
@@ -206,6 +258,14 @@ export function useTradingEngine(
 
       const isWin = contract.status === "won";
       structure.recordResult(isWin ? "WON" : "LOST");
+      const profitStr = contract.profit !== undefined
+        ? `${contract.profit >= 0 ? "+" : ""}$${Number(contract.profit).toFixed(2)}`
+        : "—";
+      if (isWin) {
+        logger.trade(`✓ WIN | ${profitStr} | ID: ${contract.contract_id}`);
+      } else {
+        logger.trade(`✗ LOSS | ${profitStr} | ID: ${contract.contract_id}`);
+      }
 
       saveTrade({
         id: String(contract.contract_id),
@@ -226,6 +286,7 @@ export function useTradingEngine(
         if (!isWin && isBotRunningRef.current && newConsec >= maxConsecutiveLosses) {
           const reason = `${maxConsecutiveLosses} perdas consecutivas — cooldown de ${cooldownAfterLossRef.current}s`;
           console.warn(`[TradingEngine] ${reason}`);
+          logger.risk(`⚠ ${reason}`);
           lastActionTimeRef.current = Date.now();
           onForceStop(reason);
         }

@@ -4,16 +4,16 @@ import {
   History, 
   Settings, 
   Bot, 
-  HelpCircle, 
   LogOut,
-  Zap
+  Terminal
 } from "lucide-react";
 import { cn } from "../lib/utils";
 
 const menuItems = [
   { icon: LayoutDashboard, label: "Dashboard" },
-  { icon: Bot, label: "Estratégias" },
   { icon: History, label: "Histórico" },
+  { icon: Terminal, label: "Logs" },
+  { icon: Bot, label: "Estratégias" },
   { icon: Settings, label: "Configurações" },
 ];
 
