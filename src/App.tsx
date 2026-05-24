@@ -19,7 +19,7 @@ import { Sheet, SheetContent, SheetTrigger } from "./components/ui/sheet";
 import { HistoryPanel } from "./components/HistoryPanel";
 import { LogsPanel } from "./components/LogsPanel";
 import { SYMBOLS } from "./constants";
-import { useConnectionStore, useBotStore, useMarketStore, useHistoryStore } from "./store";
+import { useConnectionStore, useBotStore, useMarketStore, useHistoryStore, useSettingsStore } from "./store";
 
 export default function App() {
   const [activeTab, setActiveTab] = useState("Dashboard");
@@ -39,6 +39,7 @@ export default function App() {
   const { isBotRunning } = useBotStore();
   const { symbol, timeframe, candles, ticks, addTick } = useMarketStore();
   const { history, loadHistory } = useHistoryStore();
+  const { loadSettings } = useSettingsStore();
 
   // ── Inicialização ─────────────────────────────────────────────────────────
   useEffect(() => {
@@ -49,6 +50,7 @@ export default function App() {
   useEffect(() => {
     if (!supabaseUser) return;
     loadHistory();
+    loadSettings(); // carrega settings guardadas do Supabase
     const onUpdate = () => loadHistory();
     window.addEventListener("trade_history_updated", onUpdate);
     return () => window.removeEventListener("trade_history_updated", onUpdate);

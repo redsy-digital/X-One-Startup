@@ -14,7 +14,7 @@ import { analyzeMarket, STRATEGY_PROFILES } from "../lib/strategy";
 import { StrategyProfile } from "../types";
 import { useRiskManager } from "../hooks/useRiskManager";
 import { useTradingEngine } from "../hooks/useTradingEngine";
-import { useConnectionStore, useBotStore, useMarketStore } from "../store";
+import { useConnectionStore, useBotStore, useMarketStore, useSettingsStore } from "../store";
 
 // Zero props — todas as dependências vêm das stores
 export const BotControls = () => {
@@ -23,26 +23,13 @@ export const BotControls = () => {
   const { isBotRunning, setIsBotRunning } = useBotStore();
   const { symbol, setSymbol, candles, timeframe, setTimeframe } = useMarketStore();
 
-  // Settings locais (futuramente virão de useSettingsStore)
-  const [stake, setStake] = useState(1);
-  const [targetProfit, setTargetProfit] = useState(10);
-  const [stopLoss, setStopLoss] = useState(5);
-  const [minConfidence, setMinConfidence] = useState(70);
-  const [cooldownSeconds, setCooldownSeconds] = useState(5);
-  const [useMartingale, setUseMartingale] = useState(true);
-  const [martingaleMultiplier, setMartingaleMultiplier] = useState(2.1);
-  const [maxMartingaleSteps, setMaxMartingaleSteps] = useState(5);
-  const [useSoros, setUseSoros] = useState(false);
-  const [maxSorosLevels, setMaxSorosLevels] = useState(3);
-  const [maxConsecutiveLosses, setMaxConsecutiveLosses] = useState(5);
-  const [cooldownAfterLoss, setCooldownAfterLoss] = useState(30);
-  const [strategyProfile, setStrategyProfile] = useState<StrategyProfile>("balanced");
-
-  // Quando o perfil muda, atualiza o minConfidence automaticamente com o override do perfil
-  const handleProfileChange = (val: StrategyProfile) => {
-    setStrategyProfile(val);
-    setMinConfidence(STRATEGY_PROFILES[val].minConfidenceOverride);
-  };
+  // Settings persistidas no Supabase via useSettingsStore
+  const { settings, updateSettings, changeProfile } = useSettingsStore();
+  const {
+    stake, targetProfit, stopLoss, minConfidence, cooldownSeconds,
+    strategyProfile, useMartingale, martingaleMultiplier, maxMartingaleSteps,
+    useSoros, maxSorosLevels, maxConsecutiveLosses, cooldownAfterLoss,
+  } = settings;
   const [backtestResult, setBacktestResult] = useState<string | null>(null);
 
   const sessionIdRef = useRef(Math.random().toString(36).substring(2, 8).toUpperCase());
@@ -134,7 +121,7 @@ export const BotControls = () => {
           <div className="grid grid-cols-2 gap-4">
             <div className="space-y-2 col-span-2">
               <label className="text-xs text-muted-foreground uppercase font-bold px-1">Perfil da IA</label>
-              <Select value={strategyProfile} onValueChange={(val: any) => handleProfileChange(val as StrategyProfile)}>
+              <Select value={strategyProfile} onValueChange={(val: any) => changeProfile(val as StrategyProfile)}>
                 <SelectTrigger className="bg-black/20 border-white/10"><SelectValue /></SelectTrigger>
                 <SelectContent className="bg-[#111114] border-white/10 text-white">
                   <SelectItem value="conservative">Conservador (Min. 80% Conf.)</SelectItem>
@@ -145,11 +132,11 @@ export const BotControls = () => {
             </div>
             <div className="space-y-2">
               <label className="text-[10px] text-muted-foreground uppercase font-bold">Confiança Min. (%)</label>
-              <Input type="number" value={minConfidence} onChange={(e) => setMinConfidence(Number(e.target.value))} className="bg-black/20 border-white/10 h-9" />
+              <Input type="number" value={minConfidence} onChange={(e) => updateSettings({ minConfidence: Number(e.target.value }))} className="bg-black/20 border-white/10 h-9" />
             </div>
             <div className="space-y-2">
               <label className="text-[10px] text-muted-foreground uppercase font-bold">Cooldown (s)</label>
-              <Input type="number" value={cooldownSeconds} onChange={(e) => setCooldownSeconds(Number(e.target.value))} className="bg-black/20 border-white/10 h-9" />
+              <Input type="number" value={cooldownSeconds} onChange={(e) => updateSettings({ cooldownSeconds: Number(e.target.value }))} className="bg-black/20 border-white/10 h-9" />
             </div>
             <div className="p-4 bg-white/5 rounded-xl border border-white/10 col-span-2">
               <p className="text-[10px] text-muted-foreground uppercase font-bold mb-2">Resumo da Conexão</p>
@@ -251,7 +238,7 @@ export const BotControls = () => {
 
           <div className="space-y-2">
             <label className="text-[10px] text-muted-foreground uppercase font-bold">Stake Base ($)</label>
-            <Input type="number" value={stake} onChange={(e) => setStake(Number(e.target.value))} className="bg-black/20 border-white/10 h-9" />
+            <Input type="number" value={stake} onChange={(e) => updateSettings({ stake: Number(e.target.value }))} className="bg-black/20 border-white/10 h-9" />
           </div>
           <div className="space-y-2">
             <label className="text-[10px] text-muted-foreground uppercase font-bold">Stake Atual ($)</label>
@@ -259,11 +246,11 @@ export const BotControls = () => {
           </div>
           <div className="space-y-2">
             <label className="text-[10px] text-muted-foreground uppercase font-bold">Take Profit ($)</label>
-            <Input type="number" value={targetProfit} onChange={(e) => setTargetProfit(Number(e.target.value))} className="bg-black/20 border-white/10 text-green-400 h-9" />
+            <Input type="number" value={targetProfit} onChange={(e) => updateSettings({ targetProfit: Number(e.target.value }))} className="bg-black/20 border-white/10 text-green-400 h-9" />
           </div>
           <div className="space-y-2">
             <label className="text-[10px] text-muted-foreground uppercase font-bold">Stop Loss ($)</label>
-            <Input type="number" value={stopLoss} onChange={(e) => setStopLoss(Number(e.target.value))} className="bg-black/20 border-white/10 text-red-400 h-9" />
+            <Input type="number" value={stopLoss} onChange={(e) => updateSettings({ stopLoss: Number(e.target.value }))} className="bg-black/20 border-white/10 text-red-400 h-9" />
           </div>
 
           {/* Advanced */}
@@ -281,29 +268,29 @@ export const BotControls = () => {
               <div className="space-y-1">
                 <div className="flex items-center justify-between px-1">
                   <label className="text-[8px] text-muted-foreground uppercase font-bold">Martingale Steps</label>
-                  <Switch checked={useMartingale} onCheckedChange={setUseMartingale} className="scale-75" />
+                  <Switch checked={useMartingale} onCheckedChange={(v) => updateSettings({ useMartingale: v })} className="scale-75" />
                 </div>
                 <div className="flex gap-1">
-                  <Input type="number" value={maxMartingaleSteps} onChange={(e) => setMaxMartingaleSteps(Number(e.target.value))} disabled={!useMartingale} className="bg-black/20 border-white/10 h-6 text-[10px] px-2" />
-                  <Input type="number" step="0.1" value={martingaleMultiplier} onChange={(e) => setMartingaleMultiplier(Number(e.target.value))} disabled={!useMartingale} className="bg-black/20 border-white/10 h-6 text-[10px] px-2" placeholder="Mult" />
+                  <Input type="number" value={maxMartingaleSteps} onChange={(e) => updateSettings({ maxMartingaleSteps: Number(e.target.value }))} disabled={!useMartingale} className="bg-black/20 border-white/10 h-6 text-[10px] px-2" />
+                  <Input type="number" step="0.1" value={martingaleMultiplier} onChange={(e) => updateSettings({ martingaleMultiplier: Number(e.target.value }))} disabled={!useMartingale} className="bg-black/20 border-white/10 h-6 text-[10px] px-2" placeholder="Mult" />
                 </div>
               </div>
               <div className="space-y-1">
                 <div className="flex items-center justify-between px-1">
                   <label className="text-[8px] text-muted-foreground uppercase font-bold">Soros Levels</label>
-                  <Switch checked={useSoros} onCheckedChange={setUseSoros} className="scale-75" />
+                  <Switch checked={useSoros} onCheckedChange={(v) => updateSettings({ useSoros: v })} className="scale-75" />
                 </div>
-                <Input type="number" value={maxSorosLevels} onChange={(e) => setMaxSorosLevels(Number(e.target.value))} disabled={!useSoros} className="bg-black/20 border-white/10 h-6 text-[10px] px-2" />
+                <Input type="number" value={maxSorosLevels} onChange={(e) => updateSettings({ maxSorosLevels: Number(e.target.value }))} disabled={!useSoros} className="bg-black/20 border-white/10 h-6 text-[10px] px-2" />
               </div>
             </div>
             <div className="grid grid-cols-2 gap-3">
               <div className="space-y-1">
                 <label className="text-[8px] text-muted-foreground uppercase font-bold px-1">Max Perdas Seguidas</label>
-                <Input type="number" value={maxConsecutiveLosses} onChange={(e) => setMaxConsecutiveLosses(Number(e.target.value))} className="bg-black/20 border-white/10 h-6 text-[10px] px-2" />
+                <Input type="number" value={maxConsecutiveLosses} onChange={(e) => updateSettings({ maxConsecutiveLosses: Number(e.target.value }))} className="bg-black/20 border-white/10 h-6 text-[10px] px-2" />
               </div>
               <div className="space-y-1">
                 <label className="text-[8px] text-muted-foreground uppercase font-bold px-1">Cooldown Loss (s)</label>
-                <Input type="number" value={cooldownAfterLoss} onChange={(e) => setCooldownAfterLoss(Number(e.target.value))} className="bg-black/20 border-white/10 h-6 text-[10px] px-2" />
+                <Input type="number" value={cooldownAfterLoss} onChange={(e) => updateSettings({ cooldownAfterLoss: Number(e.target.value }))} className="bg-black/20 border-white/10 h-6 text-[10px] px-2" />
               </div>
             </div>
           </div>
