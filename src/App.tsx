@@ -18,6 +18,7 @@ import { motion, AnimatePresence } from "motion/react";
 import { Sheet, SheetContent, SheetTrigger } from "./components/ui/sheet";
 import { HistoryPanel } from "./components/HistoryPanel";
 import { LogsPanel } from "./components/LogsPanel";
+import { StrategyPanel } from "./components/StrategyPanel";
 import { SYMBOLS } from "./constants";
 import { useConnectionStore, useBotStore, useMarketStore, useHistoryStore, useSettingsStore } from "./store";
 
@@ -206,6 +207,8 @@ export default function App() {
               <HistoryPanel />
             ) : activeTab === "Logs" ? (
               <LogsPanel />
+            ) : activeTab === "Estratégias" ? (
+              <StrategyPanel />
             ) : (
               <>
                 {/* Stats */}

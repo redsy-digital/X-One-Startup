@@ -4,6 +4,7 @@ import { analyzeMarket } from "../lib/strategy";
 import { saveTrade } from "../lib/storage";
 import { Candle, TradeSignal, StrategyProfile } from "../types";
 import { logger } from "../lib/logger";
+import { useSignalStore } from "../store/useSignalStore";
 import { useMarketStructure } from "./useMarketStructure";
 
 interface TradingEngineConfig {
@@ -112,6 +113,7 @@ export function useTradingEngine(
 
     const analysis = analyzeMarket(candles, symbol, strategyProfile);
     setLastSignal(analysis);
+    useSignalStore.getState().setLastSignal(analysis);
 
     // Log do sinal em cada novo candle
     const mkt = analysis.indicators.marketCondition;
