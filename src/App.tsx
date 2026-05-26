@@ -19,6 +19,8 @@ import { Sheet, SheetContent, SheetTrigger } from "./components/ui/sheet";
 import { HistoryPanel } from "./components/HistoryPanel";
 import { LogsPanel } from "./components/LogsPanel";
 import { StrategyPanel } from "./components/StrategyPanel";
+import { BacktestPanel } from "./components/BacktestPanel";
+import { ErrorBoundary } from "./components/ErrorBoundary";
 import { SYMBOLS } from "./constants";
 import { useConnectionStore, useBotStore, useMarketStore, useHistoryStore, useSettingsStore } from "./store";
 
@@ -204,11 +206,22 @@ export default function App() {
         <div className="flex-1 overflow-x-hidden">
           <div className="p-4 md:p-8 space-y-6 md:space-y-8 max-w-7xl mx-auto w-full">
             {activeTab === "Histórico" ? (
-              <HistoryPanel />
+              <ErrorBoundary fallbackLabel="Erro no Histórico">
+                <HistoryPanel />
+              </ErrorBoundary>
             ) : activeTab === "Logs" ? (
-              <LogsPanel />
+              <ErrorBoundary fallbackLabel="Erro nos Logs">
+                <LogsPanel />
+              </ErrorBoundary>
             ) : activeTab === "Estratégias" ? (
-              <StrategyPanel />
+              <div className="space-y-8">
+                <ErrorBoundary fallbackLabel="Erro na Estratégia">
+                  <StrategyPanel />
+                </ErrorBoundary>
+                <ErrorBoundary fallbackLabel="Erro no Backtest">
+                  <BacktestPanel />
+                </ErrorBoundary>
+              </div>
             ) : (
               <>
                 {/* Stats */}

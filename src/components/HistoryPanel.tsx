@@ -12,6 +12,7 @@ import {
 } from "lucide-react";
 import { clearTradeHistory, exportToPDF } from "../lib/storage";
 import { TradeHistory } from "../types";
+import { useHistoryStore } from "../store";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
 import { NeonCard } from "./NeonCard";
