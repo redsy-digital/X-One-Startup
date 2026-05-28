@@ -25,11 +25,13 @@ export const HistoryPanel = () => {
   const [filterType, setFilterType] = useState<"ALL" | "CALL" | "PUT">("ALL");
 
   useEffect(() => {
-    loadHistory();
-    const handleUpdate = () => loadHistory();
+    // loadHistory é async — usa .catch() para apanhar rejeições
+    const handleUpdate = () => {
+      loadHistory().catch((e) => console.error("[HistoryPanel]", e));
+    };
     window.addEventListener("trade_history_updated", handleUpdate);
     return () => window.removeEventListener("trade_history_updated", handleUpdate);
-  }, []);
+  }, [loadHistory]);
 
   const filteredHistory = history.filter(trade => {
     const resultMatch = filterResult === "ALL" || trade.status === filterResult;

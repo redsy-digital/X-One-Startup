@@ -23,22 +23,31 @@ export class ErrorBoundary extends React.Component<Props, State> {
   }
 
   componentDidCatch(error: Error, info: React.ErrorInfo) {
-    console.error("[ErrorBoundary]", error, info.componentStack);
+    const msg = `[${this.props.fallbackLabel || "ErrorBoundary"}] ${error.message}`;
+    console.error(msg, info.componentStack);
+    // Tenta registar no logger sem criar dependência circular
+    try {
+      const { logger } = require("../lib/logger");
+      logger.error(msg);
+    } catch { /* logger pode não estar disponível no root boundary */ }
   }
 
   render() {
     if (this.state.hasError) {
       return (
-        <div className="flex flex-col items-center justify-center min-h-[300px] gap-4 p-8">
+        <div className="flex flex-col items-center justify-center min-h-[280px] gap-4 p-8 bg-red-950/10 rounded-2xl border border-red-500/20 m-4">
           <div className="w-14 h-14 rounded-full bg-red-500/10 flex items-center justify-center">
             <AlertTriangle className="w-7 h-7 text-red-400" />
           </div>
-          <div className="text-center space-y-1">
+          <div className="text-center space-y-2 max-w-sm">
             <p className="text-sm font-black text-white uppercase tracking-wide">
               {this.props.fallbackLabel || "Erro ao carregar"}
             </p>
-            <p className="text-[11px] text-muted-foreground max-w-xs">
+            <p className="text-[11px] text-red-300/80 font-mono break-all">
               {this.state.error}
+            </p>
+            <p className="text-[10px] text-muted-foreground">
+              Abre o painel de <strong>Logs</strong> para mais detalhes
             </p>
           </div>
           <Button
@@ -52,7 +61,6 @@ export class ErrorBoundary extends React.Component<Props, State> {
         </div>
       );
     }
-
     return this.props.children;
   }
 }

@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState, lazy, Suspense } from "react";
 import { cn } from "./lib/utils";
 import { Sidebar } from "./components/Sidebar";
 import { Header } from "./components/Header";
@@ -16,11 +16,13 @@ import { Button } from "./components/ui/button";
 import { Input } from "./components/ui/input";
 import { motion, AnimatePresence } from "motion/react";
 import { Sheet, SheetContent, SheetTrigger } from "./components/ui/sheet";
-import { HistoryPanel } from "./components/HistoryPanel";
-import { LogsPanel } from "./components/LogsPanel";
-import { StrategyPanel } from "./components/StrategyPanel";
-import { BacktestPanel } from "./components/BacktestPanel";
 import { ErrorBoundary } from "./components/ErrorBoundary";
+
+// Lazy imports — isola cada tab: se um ficheiro tiver erro, só esse tab é afectado
+const HistoryPanel  = lazy(() => import("./components/HistoryPanel").then(m => ({ default: m.HistoryPanel })));
+const LogsPanel     = lazy(() => import("./components/LogsPanel").then(m => ({ default: m.LogsPanel })));
+const StrategyPanel = lazy(() => import("./components/StrategyPanel").then(m => ({ default: m.StrategyPanel })));
+const BacktestPanel = lazy(() => import("./components/BacktestPanel").then(m => ({ default: m.BacktestPanel })));
 import { SYMBOLS } from "./constants";
 import { useConnectionStore, useBotStore, useMarketStore, useHistoryStore, useSettingsStore } from "./store";
 
@@ -205,6 +207,11 @@ export default function App() {
 
         <div className="flex-1 overflow-x-hidden">
           <div className="p-4 md:p-8 space-y-6 md:space-y-8 max-w-7xl mx-auto w-full">
+            <Suspense fallback={
+              <div className="flex items-center justify-center h-64 text-muted-foreground text-sm">
+                A carregar...
+              </div>
+            }>
             {activeTab === "Histórico" ? (
               <ErrorBoundary fallbackLabel="Erro no Histórico">
                 <HistoryPanel />
@@ -279,9 +286,13 @@ export default function App() {
                         </div>
                         <Badge variant="outline" className="border-purple-500/50 text-purple-400 text-[8px] md:text-[10px]">REAL-TIME</Badge>
                       </div>
-                      <TradingChart candles={candles} symbol={symbol} />
+                      <ErrorBoundary fallbackLabel="Erro no Gráfico">
+                        <TradingChart candles={candles} symbol={symbol} />
+                      </ErrorBoundary>
                     </NeonCard>
-                    <BotControls />
+                    <ErrorBoundary fallbackLabel="Erro nos Controlos do Bot">
+                      <BotControls />
+                    </ErrorBoundary>
                   </div>
 
                   {/* Sidebar */}
@@ -371,6 +382,7 @@ export default function App() {
                 </div>
               </>
             )}
+            </Suspense>
           </div>
         </div>
       </main>
