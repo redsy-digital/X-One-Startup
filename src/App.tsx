@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState, lazy, Suspense } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { cn } from "./lib/utils";
 import { Sidebar } from "./components/Sidebar";
 import { Header } from "./components/Header";
@@ -17,14 +17,26 @@ import { Input } from "./components/ui/input";
 import { motion, AnimatePresence } from "motion/react";
 import { Sheet, SheetContent, SheetTrigger } from "./components/ui/sheet";
 import { ErrorBoundary } from "./components/ErrorBoundary";
+// Lazy imports — cada tab carrega de forma isolada
+// Se um componente falhar, só esse tab é afectado
+const HistoryPanel  = React.lazy(() => import("./components/HistoryPanel").then(m => ({ default: m.HistoryPanel })));
+const LogsPanel     = React.lazy(() => import("./components/LogsPanel").then(m => ({ default: m.LogsPanel })));
+const StrategyPanel = React.lazy(() => import("./components/StrategyPanel").then(m => ({ default: m.StrategyPanel })));
+const BacktestPanel = React.lazy(() => import("./components/BacktestPanel").then(m => ({ default: m.BacktestPanel })));
 
-// Lazy imports — isola cada tab: se um ficheiro tiver erro, só esse tab é afectado
-const HistoryPanel  = lazy(() => import("./components/HistoryPanel").then(m => ({ default: m.HistoryPanel })));
-const LogsPanel     = lazy(() => import("./components/LogsPanel").then(m => ({ default: m.LogsPanel })));
-const StrategyPanel = lazy(() => import("./components/StrategyPanel").then(m => ({ default: m.StrategyPanel })));
-const BacktestPanel = lazy(() => import("./components/BacktestPanel").then(m => ({ default: m.BacktestPanel })));
 import { SYMBOLS } from "./constants";
 import { useConnectionStore, useBotStore, useMarketStore, useHistoryStore, useSettingsStore } from "./store";
+
+
+// ── Loading state para lazy imports ──────────────────────────────────────────
+const TabLoading = ({ label }: { label: string }) => (
+  <div className="flex flex-col items-center justify-center min-h-[300px] gap-3">
+    <div className="w-8 h-8 border-2 border-purple-500 border-t-transparent rounded-full animate-spin" />
+    <p className="text-[11px] text-muted-foreground uppercase font-bold tracking-widest">
+      A carregar {label}...
+    </p>
+  </div>
+);
 
 export default function App() {
   const [activeTab, setActiveTab] = useState("Dashboard");
@@ -193,7 +205,9 @@ export default function App() {
           </Sheet>
           <div className="flex items-center gap-2">
             <div className="w-2 h-2 rounded-full bg-green-500 animate-pulse" />
-            <span className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Live Server</span>
+            <span className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">
+              {activeTab}
+            </span>
           </div>
         </div>
 
@@ -207,26 +221,29 @@ export default function App() {
 
         <div className="flex-1 overflow-x-hidden">
           <div className="p-4 md:p-8 space-y-6 md:space-y-8 max-w-7xl mx-auto w-full">
-            <Suspense fallback={
-              <div className="flex items-center justify-center h-64 text-muted-foreground text-sm">
-                A carregar...
-              </div>
-            }>
             {activeTab === "Histórico" ? (
               <ErrorBoundary fallbackLabel="Erro no Histórico">
-                <HistoryPanel />
+                <React.Suspense fallback={<TabLoading label="Histórico" />}>
+                  <HistoryPanel />
+                </React.Suspense>
               </ErrorBoundary>
             ) : activeTab === "Logs" ? (
               <ErrorBoundary fallbackLabel="Erro nos Logs">
-                <LogsPanel />
+                <React.Suspense fallback={<TabLoading label="Logs" />}>
+                  <LogsPanel />
+                </React.Suspense>
               </ErrorBoundary>
             ) : activeTab === "Estratégias" ? (
               <div className="space-y-8">
                 <ErrorBoundary fallbackLabel="Erro na Estratégia">
-                  <StrategyPanel />
+                  <React.Suspense fallback={<TabLoading label="Estratégias" />}>
+                    <StrategyPanel />
+                  </React.Suspense>
                 </ErrorBoundary>
                 <ErrorBoundary fallbackLabel="Erro no Backtest">
-                  <BacktestPanel />
+                  <React.Suspense fallback={<TabLoading label="Backtest" />}>
+                    <BacktestPanel />
+                  </React.Suspense>
                 </ErrorBoundary>
               </div>
             ) : (
@@ -382,7 +399,6 @@ export default function App() {
                 </div>
               </>
             )}
-            </Suspense>
           </div>
         </div>
       </main>
