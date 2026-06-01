@@ -1,77 +1,80 @@
 import React from "react";
-import { 
-  LayoutDashboard, 
-  History, 
-  Settings, 
-  Bot, 
-  LogOut,
-  Terminal
-} from "lucide-react";
+import { useNavigate, useLocation } from "react-router-dom";
 import { cn } from "../lib/utils";
-
-const menuItems = [
-  { icon: LayoutDashboard, label: "Dashboard" },
-  { icon: History, label: "Histórico" },
-  { icon: Terminal, label: "Logs" },
-  { icon: Bot, label: "Estratégias" },
-  { icon: Settings, label: "Configurações" },
-];
+import {
+  Home, LayoutDashboard, History, Terminal,
+  TrendingUp, Settings
+} from "lucide-react";
 
 interface SidebarProps {
   onLogout?: () => void;
-  activeTab: string;
-  setActiveTab: (tab: string) => void;
+  activeTab?: string;
+  setActiveTab?: (tab: string) => void;
   closeMobile?: () => void;
 }
 
-export const Sidebar = ({ onLogout, activeTab, setActiveTab, closeMobile }: SidebarProps) => {
-  const handleItemClick = (label: string) => {
-    setActiveTab(label);
-    if (closeMobile) closeMobile();
+const menuItems = [
+  { icon: Home,            label: "Home",         path: "/" },
+  { icon: LayoutDashboard, label: "Dashboard",    path: "/dashboard" },
+  { icon: History,         label: "Histórico",    path: "/historico" },
+  { icon: Terminal,        label: "Logs",         path: "/logs" },
+  { icon: TrendingUp,      label: "Estratégias",  path: "/estrategias" },
+  { icon: Settings,        label: "Configurações",path: "/configuracoes" },
+];
+
+export const Sidebar = ({ closeMobile }: SidebarProps) => {
+  const navigate = useNavigate();
+  const location = useLocation();
+
+  const handleNav = (path: string) => {
+    navigate(path);
+    closeMobile?.();
   };
 
   return (
-    <aside className="w-64 border-r border-white/10 bg-black/40 backdrop-blur-xl flex flex-col h-screen sticky top-0">
-      <div className="p-6 flex items-center gap-3">
-        <div className="w-10 h-10 bg-white rounded-lg flex items-center justify-center neon-border-purple shrink-0 overflow-hidden">
-          <img src="https://lh3.googleusercontent.com/d/19uIpRxexOi6-7EZX-eMVHf3ewi3BxEys" alt="X-ONE Logo" className="w-full h-full object-contain" referrerPolicy="no-referrer" />
+    <div className="h-full w-64 bg-[#0a0a0c] border-r border-white/5 flex flex-col py-6 px-4">
+      {/* Logo */}
+      <div className="flex items-center gap-3 px-2 mb-8">
+        <div className="w-8 h-8 rounded-lg bg-purple-600/20 border border-purple-500/30 flex items-center justify-center">
+          <span className="text-purple-400 font-black text-sm">X</span>
         </div>
-        <h1 className="text-2xl font-black tracking-tighter neon-text-purple">X-ONE</h1>
+        <div>
+          <span className="font-black text-white tracking-tight">X-ONE</span>
+          <p className="text-[9px] text-muted-foreground uppercase tracking-widest">Intelligence</p>
+        </div>
       </div>
 
-      <nav className="flex-1 px-4 py-6 space-y-2 overflow-y-auto">
-        {menuItems.map((item) => {
-          const isActive = activeTab === item.label;
+      {/* Nav items */}
+      <nav className="flex-1 space-y-1">
+        {menuItems.map(({ icon: Icon, label, path }) => {
+          const isActive = location.pathname === path;
           return (
             <button
-              key={item.label}
-              onClick={() => handleItemClick(item.label)}
+              key={path}
+              onClick={() => handleNav(path)}
               className={cn(
-                "w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all duration-200 group",
-                isActive 
-                  ? "bg-purple-600/20 text-purple-400 border border-purple-500/30" 
-                  : "text-muted-foreground hover:bg-white/5 hover:text-white"
+                "w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm transition-all duration-200 text-left",
+                isActive
+                  ? "bg-purple-600/20 text-white border border-purple-500/30"
+                  : "text-muted-foreground hover:text-white hover:bg-white/5"
               )}
             >
-              <item.icon className={cn(
-                "w-5 h-5 shrink-0",
-                isActive ? "text-purple-400" : "group-hover:text-white"
-              )} />
-              <span className="font-medium">{item.label}</span>
+              <Icon className={cn("w-4 h-4 shrink-0", isActive ? "text-purple-400" : "")} />
+              <span className="font-bold">{label}</span>
+              {isActive && (
+                <div className="ml-auto w-1.5 h-1.5 rounded-full bg-purple-400" />
+              )}
             </button>
           );
         })}
       </nav>
 
-      <div className="p-4 border-t border-white/10">
-        <button 
-          onClick={onLogout}
-          className="w-full flex items-center gap-3 px-4 py-3 rounded-xl text-muted-foreground hover:bg-red-500/10 hover:text-red-400 transition-all"
-        >
-          <LogOut className="w-5 h-5 shrink-0" />
-          <span className="font-medium">Terminar sessão</span>
-        </button>
+      {/* Footer */}
+      <div className="px-2 pt-4 border-t border-white/5">
+        <p className="text-[9px] text-muted-foreground/40 uppercase tracking-widest font-bold text-center">
+          v2.0 PRO
+        </p>
       </div>
-    </aside>
+    </div>
   );
 };
