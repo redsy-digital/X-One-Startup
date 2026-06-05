@@ -220,12 +220,25 @@ export default function App() {
         setBalance(data.authorize.balance);
         derivService.subscribeProposalOpenContract();
         derivService.send({ balance: 1, subscribe: 1 });
+        // Iniciar feed de ticks — essencial para o gráfico
+        const { symbol } = useMarketStore.getState();
+        derivService.subscribeTicks(symbol);
       } else {
         logger.error(`Auth Deriv: ${data.error.message}`);
       }
     });
     return () => { unsubTick(); unsubBalance(); unsubPOC(); unsubAuth(); };
   }, []);
+
+  // Re-subscrever ticks quando símbolo muda (já autorizado)
+  const { symbol } = useMarketStore();
+  const isAuthorizedRef = React.useRef(false);
+  useEffect(() => { isAuthorizedRef.current = isAuthorized; }, [isAuthorized]);
+  useEffect(() => {
+    if (!isAuthorizedRef.current) return;
+    derivService.unsubscribeTicks(symbol);
+    derivService.subscribeTicks(symbol);
+  }, [symbol]);
 
   // Carregar histórico quando user autentica
   useEffect(() => {
@@ -252,13 +265,15 @@ export default function App() {
   // Autenticado → rotas
   return (
     <Routes>
-      {/* Home — sem layout/sidebar */}
+      {/* Home — com Layout (Header + Sidebar como as outras páginas) */}
       <Route path="/" element={
-        <ErrorBoundary fallbackLabel="Erro na Home">
-          <React.Suspense fallback={<PageLoader />}>
-            <HomePage />
-          </React.Suspense>
-        </ErrorBoundary>
+        <Layout>
+          <ErrorBoundary fallbackLabel="Erro na Home">
+            <React.Suspense fallback={<PageLoader />}>
+              <HomePage />
+            </React.Suspense>
+          </ErrorBoundary>
+        </Layout>
       } />
 
       {/* Páginas com sidebar + Deriv guard */}

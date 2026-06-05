@@ -95,42 +95,23 @@ export const HomePage = () => {
 
       <div className="relative z-10 flex flex-col min-h-screen px-5 pt-8 pb-10">
 
-        {/* ── Header: logo + status Deriv ── */}
+        {/* ── Badge de status Deriv ── */}
         <motion.div
-          initial={{ opacity: 0, y: -10 }}
-          animate={{ opacity: 1, y: 0 }}
-          className="flex items-center justify-between mb-8"
+          initial={{ opacity: 0, scale: 0.8 }}
+          animate={{ opacity: 1, scale: 1 }}
+          transition={{ delay: 0.2 }}
+          onClick={() => !derivConnected && navigate("/dashboard")}
+          className={cn(
+            "inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full border text-[10px] font-black uppercase cursor-pointer transition-all mb-8",
+            derivConnected
+              ? "bg-green-500/10 border-green-500/40 text-green-400"
+              : "bg-red-500/10 border-red-500/40 text-red-400 animate-pulse"
+          )}
         >
-          <div>
-            <h1
-              className="text-3xl font-black tracking-tighter"
-              style={{ textShadow: "0 0 20px rgba(124,58,237,0.8), 0 0 40px rgba(59,130,246,0.4)" }}
-            >
-              X<span className="text-blue-400">-</span>ONE
-            </h1>
-            <p className="text-[9px] text-muted-foreground uppercase tracking-[0.3em] font-bold">
-              Intelligence Trading Bot
-            </p>
-          </div>
-
-          {/* Badge de status Deriv */}
-          <motion.div
-            initial={{ opacity: 0, scale: 0.8 }}
-            animate={{ opacity: 1, scale: 1 }}
-            transition={{ delay: 0.2 }}
-            onClick={() => !derivConnected && navigate("/dashboard")}
-            className={cn(
-              "flex items-center gap-1.5 px-3 py-1.5 rounded-full border text-[10px] font-black uppercase cursor-pointer transition-all",
-              derivConnected
-                ? "bg-green-500/10 border-green-500/40 text-green-400"
-                : "bg-red-500/10 border-red-500/40 text-red-400 animate-pulse"
-            )}
-          >
-            {derivConnected
-              ? <><Wifi className="w-3 h-3" /> Conectado</>
-              : <><WifiOff className="w-3 h-3" /> Conectar</>
-            }
-          </motion.div>
+          {derivConnected
+            ? <><Wifi className="w-3 h-3" /> Conectado</>
+            : <><WifiOff className="w-3 h-3" /> Conectar</>
+          }
         </motion.div>
 
         {/* ── Secção do criador: texto + retrato ── */}
@@ -156,7 +137,7 @@ export const HomePage = () => {
               transition={{ delay: 0.25 }}
               className="text-2xl font-black tracking-tight text-white leading-tight mb-3"
             >
-              Pedro<br />dos Santos
+              Zion<br />Gabriel
             </motion.h2>
             <motion.p
               initial={{ opacity: 0, x: -20 }}
@@ -199,7 +180,7 @@ export const HomePage = () => {
             {/* Imagem */}
             <img
               src="/images/meu_retrato.png"
-              alt="Pedro dos Santos — Criador do X-ONE"
+              alt="Zion Gabriel — Criador do X-ONE"
               className="relative z-10 w-full object-cover"
               style={{
                 borderRadius: "20px",
