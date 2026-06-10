@@ -142,11 +142,12 @@ export const LogsPanel = () => {
       </NeonCard>
 
       {/* Lista de logs */}
-      <NeonCard variant="blue" className="relative overflow-hidden" style={{ height: "calc(100vh - 340px)", minHeight: "400px" }}>
+      <NeonCard variant="blue" className="relative overflow-hidden" style={{ height: "calc(100vh - 280px)", minHeight: "400px" }}>
         <div
           ref={scrollRef}
           onScroll={handleScroll}
           className="h-full overflow-y-auto p-3 space-y-1 font-mono"
+                style={{ scrollbarWidth: "thin", scrollbarColor: "rgba(124,58,237,0.3) transparent" }}
         >
           {filteredEntries.length === 0 ? (
             <div className="flex flex-col items-center justify-center h-full text-muted-foreground opacity-20">

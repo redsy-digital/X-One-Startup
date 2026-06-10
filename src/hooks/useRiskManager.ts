@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
 import confetti from "canvas-confetti";
+import { useSessionStore } from "../store/useSessionStore";
 import { logger } from "../lib/logger";
 
 interface RiskManagerConfig {
@@ -55,6 +56,7 @@ export function useRiskManager(
       logger.risk(`🎯 Take Profit atingido! Sessão: +$${currentProfit.toFixed(2)}`);
       setIsBotRunning(false);
       setShowModal({ show: true, type: "profit", amount: currentProfit });
+        useSessionStore.getState().setModal({ show: true, type: "profit", amount: currentProfit });
       confetti({
         particleCount: 150,
         spread: 70,
@@ -65,6 +67,7 @@ export function useRiskManager(
       logger.risk(`⛔ Stop Loss atingido. Sessão: $${currentProfit.toFixed(2)}`);
       setIsBotRunning(false);
       setShowModal({ show: true, type: "loss", amount: currentProfit });
+        useSessionStore.getState().setModal({ show: true, type: "loss", amount: currentProfit });
     }
   }, [balance, initialBalance, isBotRunning, config.targetProfit, config.stopLoss]);
 

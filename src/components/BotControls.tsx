@@ -15,6 +15,7 @@ import { StrategyProfile } from "../types";
 import { useRiskManager } from "../hooks/useRiskManager";
 import { useTradingEngine } from "../hooks/useTradingEngine";
 import { useConnectionStore, useBotStore, useMarketStore, useSettingsStore } from "../store";
+import { useSessionStore } from "../store/useSessionStore";
 
 // Zero props — todas as dependências vêm das stores
 export const BotControls = () => {
@@ -43,7 +44,10 @@ export const BotControls = () => {
   );
 
   useEffect(() => {
-    if (isBotRunning && balance !== null) riskActions.onBotStart(balance);
+    if (isBotRunning && balance !== null) {
+      riskActions.onBotStart(balance);
+      useSessionStore.getState().resetSession();
+    }
     if (!isBotRunning) riskActions.onBotStop();
   }, [isBotRunning]);
 
