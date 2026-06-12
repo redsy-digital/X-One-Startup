@@ -15,7 +15,6 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue
 } from "../components/ui/select";
 import { TradingChart } from "../components/TradingChart";
-import { BotControls } from "../components/BotControls";
 import { ErrorBoundary } from "../components/ErrorBoundary";
 import { SYMBOLS } from "../constants";
 import { logger, LogEntry } from "../lib/logger";
@@ -100,7 +99,7 @@ const AcertosModal = ({ onClose }: { onClose: () => void }) => {
             <label className="text-[9px] text-muted-foreground uppercase font-black">Perfil IA</label>
             <Select value={s.strategyProfile} onValueChange={(v: any) => changeProfile(v)}>
               <SelectTrigger className="bg-black/30 border-white/10 h-8 text-[11px]"><SelectValue /></SelectTrigger>
-              <SelectContent className="bg-[#111114] border-white/10 text-white">
+              <SelectContent className="bg-[#111114] border-white/10 text-white z-[500]">
                 <SelectItem value="conservative">Conservador (80%)</SelectItem>
                 <SelectItem value="balanced">Equilibrado (70%)</SelectItem>
                 <SelectItem value="aggressive">Agressivo (55%)</SelectItem>
@@ -167,11 +166,12 @@ export const DashboardPage = () => {
   const { symbol, setSymbol, candles, ticks, timeframe, setTimeframe } = useMarketStore();
   const { settings } = useSettingsStore();
   const { lastSignal } = useSignalStore();
-  const { wins, losses, pnl, modal, closeModal } = useSessionStore();
+  const { wins, losses, pnl: rawPnl, modal, closeModal } = useSessionStore();
+  const pnl = Number(rawPnl) || 0;
   const logEntries = useLogEntries(60);
   const timer = useSessionTimer(isBotRunning);
   const [showAcertos, setShowAcertos] = useState(false);
-  const logsEndRef = useRef<HTMLDivElement>(null);
+  
 
   // Fix 3: histórico local actualizado em tempo real
   const [localHistory, setLocalHistory] = useState<TradeHistory[]>(() => getTradeHistory());
@@ -182,8 +182,11 @@ export const DashboardPage = () => {
   }, []);
 
   // Auto-scroll logs
+  const logsContainerRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
-    logsEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    if (logsContainerRef.current) {
+      logsContainerRef.current.scrollTop = logsContainerRef.current.scrollHeight;
+    }
   }, [logEntries.length]);
 
   // Redirecionar se sem Deriv
@@ -343,7 +346,7 @@ export const DashboardPage = () => {
                 Histórico em Tempo Real
               </p>
               <div className="flex-1 overflow-y-auto space-y-1.5 pr-0.5"
-                style={{ scrollbarWidth: "thin", scrollbarColor: "rgba(59,130,246,0.3) transparent" }}>
+                style={{ scrollbarWidth: "thin", scrollbarColor: "rgba(59,130,246,0.3) transparent", overscrollBehavior: "contain" }}>
                 <AnimatePresence initial={false}>
                   {localHistory.length === 0 ? (
                     <div className="flex items-center justify-center h-full opacity-20">
@@ -382,8 +385,10 @@ export const DashboardPage = () => {
               <p className="text-[9px] text-muted-foreground uppercase font-black tracking-widest mb-2 shrink-0">
                 Logs em Tempo Real
               </p>
-              <div className="flex-1 overflow-y-auto font-mono"
-                style={{ scrollbarWidth: "thin", scrollbarColor: "rgba(124,58,237,0.3) transparent" }}>
+              <div
+                ref={logsContainerRef}
+                className="flex-1 overflow-y-auto font-mono"
+                style={{ scrollbarWidth: "thin", scrollbarColor: "rgba(124,58,237,0.3) transparent", overscrollBehavior: "contain" }}>
                 {logEntries.length === 0 ? (
                   <div className="flex items-center justify-center h-full opacity-20">
                     <p className="text-[10px] uppercase font-bold text-muted-foreground">Sem logs</p>
@@ -398,17 +403,14 @@ export const DashboardPage = () => {
                     </span>
                   </div>
                 ))}
-                <div ref={logsEndRef} />
+                <div />
               </div>
             </NeonCard>
           </div>
         </div>
       </div>
 
-      {/* BotControls invisível — mantém trading engine activo */}
-      <div style={{ position: "absolute", left: "-9999px", width: "1px", height: "1px", overflow: "hidden" }} aria-hidden="true">
-        <ErrorBoundary fallbackLabel=""><BotControls /></ErrorBoundary>
-      </div>
+      {/* BotControls gerido no App.tsx — sempre activo */}
 
       {/* Fix 5: Modal resultado SL/TP */}
       <AnimatePresence>

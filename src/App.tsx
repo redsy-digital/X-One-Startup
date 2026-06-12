@@ -6,6 +6,7 @@ import { Input } from "./components/ui/input";
 import { Badge } from "./components/ui/badge";
 import { NeonCard } from "./components/NeonCard";
 import { Layout } from "./components/Layout";
+import { BotControls } from "./components/BotControls";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { derivService } from "./lib/deriv";
 import { logger } from "./lib/logger";
@@ -264,7 +265,16 @@ export default function App() {
 
   // Autenticado → rotas
   return (
-    <Routes>
+    <>
+      {/* BotControls sempre montado quando autorizado — bot opera em qualquer página */}
+      {isAuthorized && (
+        <div style={{ position: "absolute", left: "-9999px", width: "1px", height: "1px", overflow: "hidden" }} aria-hidden="true">
+          <ErrorBoundary fallbackLabel="">
+            <BotControls />
+          </ErrorBoundary>
+        </div>
+      )}
+      <Routes>
       {/* Home — com Layout (Header + Sidebar como as outras páginas) */}
       <Route path="/" element={
         <Layout>
@@ -332,5 +342,6 @@ export default function App() {
       {/* Redirecionar rotas desconhecidas */}
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
+    </>
   );
 }

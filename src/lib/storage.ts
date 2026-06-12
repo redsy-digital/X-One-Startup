@@ -85,9 +85,18 @@ export const saveTrade = (trade: TradeHistory) => {
   saveToSupabase(trade);
 };
 
-export const clearTradeHistory = () => {
+export const clearTradeHistory = async () => {
   localStorage.removeItem(STORAGE_KEY);
   window.dispatchEvent(new Event("trade_history_updated"));
+  // Limpar também do Supabase
+  try {
+    const { data: { user } } = await supabase.auth.getUser();
+    if (user) {
+      await supabase.from("trade_history").delete().eq("user_id", user.id);
+    }
+  } catch (e) {
+    console.error("[Storage] clearTradeHistory Supabase error:", e);
+  }
 };
 
 export const loadHistoryFromSupabase = async (): Promise<TradeHistory[]> => {
