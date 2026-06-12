@@ -274,11 +274,11 @@ export function useTradingEngine(
         time: contract.date_start * 1000,
         symbol: contract.display_name || symbol,
         type: contract.contract_type === "CALL" || contract.contract_type === "CALLE" ? "CALL" : "PUT",
-        stake: contract.buy_price,
+        stake: Number(contract.buy_price),   // API pode enviar string — garantir número
         status: isWin ? "WON" : "LOST",
-        profit: contract.profit,
-        entryPrice: contract.entry_tick,
-        exitPrice: contract.exit_tick,
+        profit: Number(contract.profit),     // API pode enviar string — garantir número
+        entryPrice: Number(contract.entry_tick),
+        exitPrice: Number(contract.exit_tick),
       });
 
       setSessionStats((prev) => {

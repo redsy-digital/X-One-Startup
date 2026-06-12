@@ -372,7 +372,7 @@ export const DashboardPage = () => {
                         trade.status === "PENDING" ? "text-amber-400"
                         : trade.profit && trade.profit > 0 ? "text-green-400" : "text-red-400")}>
                         {trade.status === "PENDING" ? "Pendente"
-                          : `${trade.profit && trade.profit > 0 ? "+" : ""}$${trade.profit?.toFixed(2) || "—"}`}
+                          : `${trade.profit && trade.profit > 0 ? "+" : ""}$${Number(trade.profit || 0).toFixed(2)}`}
                       </span>
                     </motion.div>
                   ))}

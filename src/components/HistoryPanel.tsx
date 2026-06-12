@@ -70,9 +70,11 @@ export const HistoryPanel = () => {
           <Button 
             variant="outline" 
             size="sm"
-            onClick={() => {
+            onClick={async () => {
               if (confirm("Tem certeza que deseja apagar todo o histórico?")) {
-                clearTradeHistory();
+                await clearTradeHistory();
+                // Forçar actualização imediata da UI
+                loadHistory().catch(console.error);
               }
             }}
             disabled={history.length === 0}
