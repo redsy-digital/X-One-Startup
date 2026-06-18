@@ -1,5 +1,5 @@
 import { Candle, TradeSignal, StrategyIndicators, StrategyProfile, StrategyProfileConfig } from "../types";
-import { calculateEMA, calculateRSI, calculateADX, calculateATR, calculateMACD, calculateBollingerBands } from "./indicators";
+import { calculateEMA, calculateRSI, calculateADX, calculateATR } from "./indicators";
 
 // ─── Perfis de estratégia com thresholds reais ────────────────────────────────
 export const STRATEGY_PROFILES: Record<StrategyProfile, StrategyProfileConfig> = {
@@ -60,8 +60,10 @@ export const analyzeMarket = (
   const emaSlow = calculateEMA(closes, 21);
   const rsi = calculateRSI(closes, 14);
   const { adx, plusDI, minusDI } = calculateADX(candles, 14);
-  const macdData = calculateMACD(closes);
-  const bb = calculateBollingerBands(closes);
+  // MACD e Bollinger Bands: removidos do hot path (auditoria confirmou que eram
+  // calculados em cada candle mas nunca influenciavam score/confiança/UI — CPU
+  // desperdiçada). calculateMACD/calculateBollingerBands continuam disponíveis
+  // em indicators.ts para incorporação deliberada na fase de melhoria de estratégia.
   const atr = calculateATR(candles, 14);
 
   const lastCandle = candles[candles.length - 1];
@@ -221,15 +223,13 @@ export const analyzeMarket = (
     type,
     confidence,
     indicators: {
-      emaFast, emaSlow, rsi, adx, atr, macd: macdData, bollinger: bb,
+      emaFast, emaSlow, rsi, adx, atr,
       score: type === "CALL" ? callScore : putScore,
       confidence, marketCondition, callScore, putScore, scoreDiff,
       candleStrength: Number((bodySize / avgBodySize).toFixed(2)),
       lastCandlesDirection: last8.map((c) => (c.close > c.open ? "UP" : "DOWN")),
       reason, exhaustionScore: Number(exhaustionScore.toFixed(2)),
-      emaDistanceNormalized: Number(emaDist.toFixed(2)),
       trendFreshnessScore: Number(trendFreshnessScore.toFixed(2)),
-      entryTimingScore: Number(timingScore.toFixed(2)),
       lateEntryDetected, saturationDetected: isSaturated,
       timingQuality: Number(timingScore.toFixed(2)),
       confidencePenaltyReasons: penaltyReasons,

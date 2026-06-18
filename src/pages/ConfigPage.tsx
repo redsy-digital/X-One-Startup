@@ -11,6 +11,7 @@ import { Input } from "../components/ui/input";
 import { cn } from "../lib/utils";
 import { useConnectionStore } from "../store";
 import { supabase } from "../lib/supabase";
+import { derivService } from "../lib/deriv";
 import { logger } from "../lib/logger";
 
 // ── Modal de confirmação simples ──────────────────────────────────────────────
@@ -199,18 +200,25 @@ export const ConfigPage = () => {
   const handleDelete = async () => {
     setDeleting(true);
     try {
-      const { data: { user } } = await supabase.auth.getUser();
-      if (!user) return;
+      const { data: sessionData } = await supabase.auth.getSession();
+      const token = sessionData.session?.access_token;
+      if (!token) { console.error("Sem sessão válida"); return; }
 
-      // Apagar dados do utilizador das tabelas
-      await supabase.from("trade_history").delete().eq("user_id", user.id);
-      await supabase.from("deriv_connections").delete().eq("user_id", user.id);
-      await supabase.from("bot_settings").delete().eq("user_id", user.id);
-      await supabase.from("profiles").delete().eq("id", user.id);
+      const { data, error } = await supabase.functions.invoke("delete-account", {
+        headers: { Authorization: `Bearer ${token}` },
+      });
 
-      // Fazer logout (conta fica no auth mas dados limpos)
-      await signOut();
-      logger.system("Conta excluída");
+      if (error) {
+        console.error("Delete account error:", error.message);
+        logger.error(`Erro ao excluir conta: ${error.message}`);
+        return;
+      }
+
+      // Utilizador apagado de auth.users — cascade limpa todas as tabelas automaticamente.
+      // Limpar estado local e sair.
+      derivService.disconnect();
+      logger.system("Conta excluída permanentemente");
+      window.location.href = "/"; // força reload limpo (sessão já não existe)
     } catch (e: any) {
       console.error("Delete account error:", e);
     } finally {

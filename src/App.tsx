@@ -6,7 +6,7 @@ import { Input } from "./components/ui/input";
 import { Badge } from "./components/ui/badge";
 import { NeonCard } from "./components/NeonCard";
 import { Layout } from "./components/Layout";
-import { BotControls } from "./components/BotControls";
+import { TradingEngineRunner } from "./components/TradingEngineRunner";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { derivService } from "./lib/deriv";
 import { logger } from "./lib/logger";
@@ -197,7 +197,7 @@ export default function App() {
     isAuthorized, setIsAuthorized, setBalance, setIsLoggedIn,
     initAuth,
   } = useConnectionStore();
-  const { addTick } = useMarketStore();
+  const { addTick, setHistoricalCandles } = useMarketStore();
   const { loadHistory } = useHistoryStore();
 
   // Inicializar auth
@@ -215,23 +215,39 @@ export default function App() {
       if (data.proposal_open_contract?.is_sold)
         derivService.send({ balance: 1, subscribe: 1 });
     });
+    // Resposta do ticks_history (candles históricos)
+    const unsubCandles = derivService.on("candles", (data: any) => {
+      if (data.error || !data.candles?.length) return;
+      const historical = data.candles.map((c: any) => ({
+        time: Number(c.epoch),
+        open: Number(c.open),
+        high: Number(c.high),
+        low: Number(c.low),
+        close: Number(c.close),
+      }));
+      setHistoricalCandles(historical);
+      logger.system(`✓ ${historical.length} candles históricos carregados`);
+    });
+
     const unsubAuth = derivService.on("authorize", (data: any) => {
       if (!data.error) {
         setIsAuthorized(true);
         setBalance(data.authorize.balance);
         derivService.subscribeProposalOpenContract();
         derivService.send({ balance: 1, subscribe: 1 });
-        // Iniciar feed de ticks — essencial para o gráfico
-        const { symbol } = useMarketStore.getState();
+        // Iniciar feed de ticks + pré-carregar 500 candles históricos
+        const { symbol, timeframe } = useMarketStore.getState();
         derivService.subscribeTicks(symbol);
+        derivService.requestTicksHistory(symbol, 500, timeframe);
       } else {
         logger.error(`Auth Deriv: ${data.error.message}`);
       }
     });
-    return () => { unsubTick(); unsubBalance(); unsubPOC(); unsubAuth(); };
+
+    return () => { unsubTick(); unsubBalance(); unsubPOC(); unsubCandles(); unsubAuth(); };
   }, []);
 
-  // Re-subscrever ticks quando símbolo muda (já autorizado)
+  // Re-subscrever ticks + buscar histórico quando símbolo muda
   const { symbol } = useMarketStore();
   const isAuthorizedRef = React.useRef(false);
   useEffect(() => { isAuthorizedRef.current = isAuthorized; }, [isAuthorized]);
@@ -239,6 +255,7 @@ export default function App() {
     if (!isAuthorizedRef.current) return;
     derivService.unsubscribeTicks(symbol);
     derivService.subscribeTicks(symbol);
+    derivService.requestTicksHistory(symbol, 500, 1);
   }, [symbol]);
 
   // Carregar histórico quando user autentica
@@ -266,13 +283,12 @@ export default function App() {
   // Autenticado → rotas
   return (
     <>
-      {/* BotControls sempre montado quando autorizado — bot opera em qualquer página */}
+      {/* Motor de trading sempre montado quando autorizado — sem UI fantasma,
+          bot opera em qualquer página (Fix #7 da auditoria) */}
       {isAuthorized && (
-        <div style={{ position: "absolute", left: "-9999px", width: "1px", height: "1px", overflow: "hidden" }} aria-hidden="true">
-          <ErrorBoundary fallbackLabel="">
-            <BotControls />
-          </ErrorBoundary>
-        </div>
+        <ErrorBoundary fallbackLabel="">
+          <TradingEngineRunner />
+        </ErrorBoundary>
       )}
       <Routes>
       {/* Home — com Layout (Header + Sidebar como as outras páginas) */}

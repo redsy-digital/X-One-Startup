@@ -410,7 +410,7 @@ export const DashboardPage = () => {
         </div>
       </div>
 
-      {/* BotControls gerido no App.tsx — sempre activo */}
+      {/* Motor de trading: gerido centralmente em App.tsx via TradingEngineRunner */}
 
       {/* Fix 5: Modal resultado SL/TP */}
       <AnimatePresence>

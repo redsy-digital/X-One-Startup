@@ -1,13 +1,32 @@
-import React from "react";
+import React, { useState, useEffect } from "react";
+import { useNavigate } from "react-router-dom";
 import { Bell, Wallet, Info } from "lucide-react";
 import { cn } from "../lib/utils";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "./ui/tooltip";
 import { useConnectionStore, useBotStore } from "../store";
+import { logger } from "../lib/logger";
 
 // Zero props — lê das stores
 export const Header = () => {
   const { balance, isDemo, setIsDemo } = useConnectionStore();
   const { isBotRunning } = useBotStore();
+  const navigate = useNavigate();
+
+  // Sino: real, navega para Logs. Indicador só aparece se houver erro/risco não vistos.
+  const [hasAlert, setHasAlert] = useState(false);
+  useEffect(() => {
+    const unsub = logger.subscribe((entry) => {
+      if (entry && (entry.level === "error" || entry.level === "risk")) {
+        setHasAlert(true);
+      }
+    });
+    return unsub;
+  }, []);
+
+  const handleBellClick = () => {
+    setHasAlert(false);
+    navigate("/logs");
+  };
 
   return (
     <header className="h-16 md:h-20 border-b border-white/10 px-4 md:px-8 flex items-center justify-between bg-black/20 backdrop-blur-md sticky top-0 z-50 shrink-0">
@@ -48,9 +67,11 @@ export const Header = () => {
               </span>
             </div>
           </div>
-          <button className="relative p-2 text-muted-foreground hover:text-white transition-colors">
+          <button onClick={handleBellClick} title="Ver Logs" className="relative p-2 text-muted-foreground hover:text-white transition-colors">
             <Bell className="w-5 h-5" />
-            <span className="absolute top-2 right-2 w-2 h-2 bg-purple-500 rounded-full neon-border-purple"></span>
+            {hasAlert && (
+              <span className="absolute top-2 right-2 w-2 h-2 bg-red-500 rounded-full animate-pulse"></span>
+            )}
           </button>
         </div>
       </div>

@@ -18,7 +18,6 @@ export interface StructureEvaluation {
 
 export function useMarketStructure(): MarketStructureRefs & {
   evaluateStructure: (candles: Candle[], analysis: TradeSignal) => StructureEvaluation;
-  isEntryAllowed: (analysis: TradeSignal, minConfidence: number) => boolean;
   recordTrade: (type: "CALL" | "PUT") => void;
   recordResult: (result: "WON" | "LOST") => void;
   resetSession: () => void;
@@ -96,39 +95,6 @@ export function useMarketStructure(): MarketStructureRefs & {
   };
 
   /**
-   * Verifica se uma entrada é permitida pelas regras de disciplina.
-   * Encapsula todos os filtros de disciplina e qualidade de sinal.
-   */
-  const isEntryAllowed = (
-    analysis: TradeSignal,
-    minConfidence: number
-  ): boolean => {
-    if (analysis.type === "NEUTRAL") return false;
-
-    // Disciplina: Bloqueio pós-perda na mesma estrutura
-    if (
-      lastTradeResultRef.current === "LOST" &&
-      analysis.type === lastTradeTypeRef.current &&
-      lastTradeStructureIdRef.current === currentStructureIdRef.current
-    ) {
-      return false;
-    }
-
-    // Qualidade do sinal: Freshness
-    const freshness = analysis.indicators.trendFreshnessScore || 0;
-    if (freshness < 4) return false;
-
-    // Qualidade do sinal: Timing
-    const timing = analysis.indicators.timingQuality || 0;
-    if (timing < 5) return false;
-
-    // Confiança mínima
-    if (analysis.confidence < minConfidence) return false;
-
-    return true;
-  };
-
-  /**
    * Registra que um trade foi executado (atualiza refs de disciplina).
    */
   const recordTrade = (type: "CALL" | "PUT") => {
@@ -166,7 +132,6 @@ export function useMarketStructure(): MarketStructureRefs & {
     currentStructureDirectionRef,
     candlesSinceLastLossRef,
     evaluateStructure,
-    isEntryAllowed,
     recordTrade,
     recordResult,
     resetSession,

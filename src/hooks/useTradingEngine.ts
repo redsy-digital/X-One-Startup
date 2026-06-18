@@ -88,16 +88,25 @@ export function useTradingEngine(
       isProcessingTradeRef.current = false;
       setIsProcessing(false);
       setError(null);
+    } else {
+      // Bot a iniciar: limpar estado de estrutura de mercado da sessão anterior
+      // (lastTradeResultRef, currentStructureIdRef, etc — nunca eram resetados antes)
+      structure.resetSession();
+      lastCandleTimeRef.current = 0;
+      consecutiveLossesRef.current = 0;
     }
   }, [isBotRunning]);
 
   // Trade manual
+  const isManualTradeRef = useRef(false);
   const placeTrade = useCallback(
     (type: "CALL" | "PUT") => {
       if (!isAuthorized || isProcessingTradeRef.current) return;
       setError(null);
+      isManualTradeRef.current = true; // marca como manual — sempre executa a compra
       isProcessingTradeRef.current = true;
       setIsProcessing(true);
+      logger.trade(`▶ Trade manual ${type} | $${stake.toFixed(2)} | ${symbol}`);
       derivService.getPriceProposal(symbol, type, stake, 5, "t");
     },
     [isAuthorized, symbol, stake]
@@ -201,12 +210,14 @@ export function useTradingEngine(
         logger.error(`Proposta recusada: ${data.error.message}`);
         setError(data.error.message);
         isProcessingTradeRef.current = false;
+        isManualTradeRef.current = false;
         setIsProcessing(false);
         return;
       }
       if (data.proposal) {
-        if (isBotRunningRef.current) {
+        if (isBotRunningRef.current || isManualTradeRef.current) {
           derivService.buy(data.proposal.id, data.proposal.ask_price);
+          isManualTradeRef.current = false; // reset após uso
         } else {
           isProcessingTradeRef.current = false;
           setIsProcessing(false);
@@ -302,7 +313,7 @@ export function useTradingEngine(
 
       if (isBotRunningRef.current) {
         lastActionTimeRef.current = Date.now();
-        if (isWin) onWin(contract.profit || 0);
+        if (isWin) onWin(Number(contract.profit) || 0);
         else onLoss();
       }
     });

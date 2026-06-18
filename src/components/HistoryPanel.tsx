@@ -61,7 +61,7 @@ export const HistoryPanel = () => {
           <Button 
             variant="outline" 
             size="sm"
-            onClick={() => exportToPDF(history)}
+            onClick={() => exportToPDF(filteredHistory)}
             disabled={history.length === 0}
             className="border-white/10 hover:bg-white/5 gap-2"
           >

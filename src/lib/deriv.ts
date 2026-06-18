@@ -85,6 +85,24 @@ export class DerivService {
     this.send({ forget_all: "ticks" });
   }
 
+  /**
+   * Pede candles históricos via ticks_history (style: "candles").
+   * subscribe:0 → pedido único, não inicia stream (a stream de ticks ao
+   * vivo já é gerida separadamente por subscribeTicks).
+   * Resposta chega com msg_type "candles" — ouvir via derivService.on("candles", ...).
+   */
+  requestTicksHistory(symbol: string, count: number, granularitySeconds: number) {
+    this.send({
+      ticks_history: symbol,
+      end: "latest",
+      count,
+      style: "candles",
+      granularity: granularitySeconds,
+      adjust_start_time: 1,
+      subscribe: 0,
+    });
+  }
+
   getPriceProposal(
     symbol: string,
     contractType: "CALL" | "PUT",

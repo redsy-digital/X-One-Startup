@@ -1,5 +1,6 @@
 import { jsPDF } from "jspdf";
 import { TradeHistory } from "../types";
+import { logger } from "../lib/logger";
 import { supabase } from "./supabase";
 
 const STORAGE_KEY = "trade_history";
@@ -69,9 +70,11 @@ const saveToSupabase = async (trade: TradeHistory) => {
       .upsert(row, { onConflict: "id,user_id" });
 
     if (error) {
+      logger.error("[Storage] Supabase upsert error:");
       console.error("[Storage] Supabase upsert error:", error.message);
     }
   } catch (e) {
+    logger.error("[Storage] Supabase save error");
     console.error("[Storage] Supabase save error", e);
   }
 };
@@ -95,6 +98,7 @@ export const clearTradeHistory = async () => {
       await supabase.from("trade_history").delete().eq("user_id", user.id);
     }
   } catch (e) {
+    logger.error("[Storage] clearTradeHistory Supabase error:");
     console.error("[Storage] clearTradeHistory Supabase error:", e);
   }
 };
@@ -112,6 +116,7 @@ export const loadHistoryFromSupabase = async (): Promise<TradeHistory[]> => {
       .limit(MAX_HISTORY);
 
     if (error) {
+      logger.error("[Storage] Supabase load error:");
       console.error("[Storage] Supabase load error:", error.message);
       return getTradeHistory(); // fallback localStorage
     }
@@ -139,6 +144,7 @@ export const loadHistoryFromSupabase = async (): Promise<TradeHistory[]> => {
 
     return history;
   } catch (e) {
+    logger.error("[Storage] loadHistoryFromSupabase error");
     console.error("[Storage] loadHistoryFromSupabase error", e);
     return getTradeHistory();
   }

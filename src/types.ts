@@ -62,14 +62,12 @@ export interface StrategyIndicators {
   blockedReason?: string;
   // Refinement fields
   exhaustionScore?: number;
-  emaDistanceNormalized?: number;
   trendFreshness?: number;
   saturationLevel?: number;
   structureResetReason?: string;
   confidencePenaltyReasons?: string[];
   // New Engine Fields
   trendFreshnessScore?: number;
-  entryTimingScore?: number;
   exhaustionPenalty?: number;
   emaStretchLevel?: number;
   entryDelayRisk?: number;
@@ -104,16 +102,4 @@ export interface TradeSignal {
   indicators: StrategyIndicators;
 }
 
-export interface BotSettings {
-  stake: number;
-  targetProfit: number;
-  stopLoss: number;
-  useMartingale: boolean;
-  martingaleMultiplier: number;
-  maxMartingaleSteps: number;
-  useSoros: boolean;
-  sorosLevels: number;
-  candleTimeframe: number; // in seconds
-  minConfidence: number;
-  cooldownSeconds: number;
-}
+
