@@ -83,6 +83,7 @@ export function useRiskManager(
   };
 
   const onWin = (profit: number) => {
+    useSessionStore.getState().recordWin(profit);
     setMartingaleStep(0);
 
     if (config.useSoros) {
@@ -102,6 +103,7 @@ export function useRiskManager(
   };
 
   const onLoss = () => {
+    useSessionStore.getState().recordLoss(-currentStake);
     setSorosLevel(0);
 
     if (config.useMartingale && martingaleStep < config.maxMartingaleSteps) {

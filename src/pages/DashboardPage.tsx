@@ -27,6 +27,8 @@ import {
 import { useSessionStore } from "../store/useSessionStore";
 
 // ── Timer de sessão ───────────────────────────────────────────────────────────
+// Zera apenas ao iniciar o bot. Ao parar, mantém o valor final visível
+// (mesmo comportamento do lucro/win-loss da sessão) até ao próximo start.
 function useSessionTimer(running: boolean) {
   const [elapsed, setElapsed] = useState(0);
   const startRef = useRef<number | null>(null);
@@ -39,9 +41,10 @@ function useSessionTimer(running: boolean) {
       intervalRef.current = setInterval(() => {
         setElapsed(Math.floor((Date.now() - startRef.current!) / 1000));
       }, 1000);
-    } else {
-      if (intervalRef.current) { clearInterval(intervalRef.current); intervalRef.current = null; }
-      if (!running) setElapsed(0);
+    } else if (intervalRef.current) {
+      clearInterval(intervalRef.current);
+      intervalRef.current = null;
+      // Não reseta elapsed — mantém o tempo final da sessão visível
     }
     return () => { if (intervalRef.current) clearInterval(intervalRef.current); };
   }, [running]);
