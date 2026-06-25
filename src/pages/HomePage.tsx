@@ -137,7 +137,7 @@ export const HomePage = () => {
               transition={{ delay: 0.25 }}
               className="text-2xl font-black tracking-tight text-white leading-tight mb-3"
             >
-              Pedro<br />dos Santos
+              Shieldren<br />dos Santos
             </motion.h2>
             <motion.p
               initial={{ opacity: 0, x: -20 }}
