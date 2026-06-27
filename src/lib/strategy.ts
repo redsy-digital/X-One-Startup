@@ -138,20 +138,43 @@ export const analyzeMarket = (
       (currentDir === "DOWN" && bbPctB < 0.15 && rsi < cfg.rsiOversold)
     );
 
-  // ── 7. Freshness e timing ─────────────────────────────────────────────────────
-  let freshness = 10;
-  if (consecutiveCount > 3) freshness -= (consecutiveCount - 3) * 1.2 * cfg.freshnessWeight;
-  if (emaDist > 1.2) freshness -= (emaDist - 1.2) * 2.5 * cfg.emaDistWeight;
-  if (acceleration > 2.2) freshness -= 1.5 * cfg.freshnessWeight;
-  const trendFreshnessScore = Math.max(0, Math.min(10, freshness));
+  // ── 7. Freshness ─────────────────────────────────────────────────────────────
+  // NOTA: emaDist NÃO entra aqui — em synthetic indices (V100=9000) / ATR (0.5)
+  // produz emaDist=30 que aniquila freshness sempre. Freshness usa APENAS
+  // consecutiveCount numa janela de 10 candles para ser independente da escala de preço.
+  const freshWindow = candles.slice(-10);
+  let consec10 = 0;
+  for (let i = freshWindow.length - 1; i >= 0; i--) {
+    const c = freshWindow[i];
+    if (c.close === c.open) continue; // ignorar neutros
+    const d = c.close > c.open ? "UP" : "DOWN";
+    if (d === currentDir) consec10++;
+    else break;
+  }
 
+  // Mean Reversion: quanto mais consecutivos, melhor (é o setup que queremos)
+  // Trend Following: fresco = poucos consecutivos
+  let trendFreshnessScore: number;
+  if (isMeanReversionSetup) {
+    // Para MR, freshness reflecte o quão esticado está o preço (bom sinal)
+    trendFreshnessScore = Math.min(10, consec10 * 2.0); // 4 consec = 8/10
+  } else {
+    // Para Trend, penalizar muitos consecutivos (tendência possivelmente madura)
+    trendFreshnessScore = Math.max(0, 10 - consec10 * 1.5 * cfg.freshnessWeight);
+    // 1 consec = 8.5, 3 consec = 5.5, 5 consec = 2.5, 7+ = 0
+  }
+
+  // ── Timing (usa emaDist em percentagem — escala-invariante) ──────────────────
+  // emaDist em % do preço: neutro a qualquer escala de preço
+  const emaDistPct = Math.abs(lastClose - emaFast) / (lastClose || 1) * 100;
   let timingQuality = 10;
-  if (emaDist > 1.4) timingQuality -= 3.5 * cfg.timingWeight;
-  if (emaDist < 0.5) timingQuality += 1.5;
-  if (consecutiveCount >= 5) timingQuality -= 2.5 * cfg.timingWeight;
-  if (macdTrend === currentDir) timingQuality += 1.5; // MACD confirma direcção
-  const timingScore   = Math.max(0, Math.min(10, timingQuality));
-  const lateEntry     = timingScore < 4;
+  if (emaDistPct > 0.5)  timingQuality -= 3.0 * cfg.timingWeight; // > 0.5% = entrada tardia
+  if (emaDistPct > 1.0)  timingQuality -= 2.0 * cfg.timingWeight; // > 1.0% = muito tarde
+  if (emaDistPct < 0.05) timingQuality += 1.5;                    // perto da EMA = boa entrada
+  if (consecutiveCount >= 5) timingQuality -= 2.0 * cfg.timingWeight;
+  if (macdTrend === currentDir) timingQuality += 1.5;
+  const timingScore = Math.max(0, Math.min(10, timingQuality));
+  const lateEntry   = timingScore < 4;
 
   // ── 8. EMA Rejection ─────────────────────────────────────────────────────────
   const last4 = candles.slice(-4);

@@ -162,8 +162,10 @@ export function useTradingEngine(
     }
 
     const freshness = analysis.indicators.trendFreshnessScore ?? 0;
-    if (freshness < 4) {
-      logger.block(`Freshness baixo: ${freshness.toFixed(1)}/10 (mín: 4.0) — tendência madura`);
+    const isMR = analysis.indicators.reason?.includes("Mean Reversion");
+    const freshnessMin = isMR ? 1 : 4; // MR tem freshness invertida (mais = melhor setup)
+    if (freshness < freshnessMin) {
+      logger.block(`Freshness baixo: ${freshness.toFixed(1)}/10 (mín: ${freshnessMin}.0) — tendência madura`);
       return;
     }
 

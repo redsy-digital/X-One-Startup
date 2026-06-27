@@ -137,7 +137,7 @@ export const HomePage = () => {
               transition={{ delay: 0.25 }}
               className="text-2xl font-black tracking-tight text-white leading-tight mb-3"
             >
-              Shieldren<br />dos Santos
+              Zion<br />Gabriel
             </motion.h2>
             <motion.p
               initial={{ opacity: 0, x: -20 }}
@@ -180,7 +180,7 @@ export const HomePage = () => {
             {/* Imagem */}
             <img
               src="/images/meu_retrato.png"
-              alt="Pedro dos Santos — Criador do X-ONE"
+              alt="Zion Gabriel — Criador do X-ONE"
               className="relative z-10 w-full object-cover"
               style={{
                 borderRadius: "20px",
