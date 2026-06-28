@@ -57,6 +57,8 @@ export function useTradingEngine(
   const [isProcessing, setIsProcessing] = useState(false);
 
   const isProcessingTradeRef = useRef(false);
+  // Previne duplo processamento: POC dispara 2x (subscricao global + por contract_id)
+  const processedContractsRef = useRef<Set<string>>(new Set());
   const lastActionTimeRef = useRef(0);
   const lastCandleTimeRef = useRef(0);
   const lastSignalRef = useRef<TradeSignal | null>(null);
@@ -268,6 +270,13 @@ export function useTradingEngine(
       if (!data.proposal_open_contract) return;
       const contract = data.proposal_open_contract;
       if (!contract.is_sold) return;
+
+      // Fix duplicados: Deriv dispara POC 2x por trade (global + por contract_id)
+      const cId = String(contract.contract_id);
+      if (processedContractsRef.current.has(cId)) return;
+      processedContractsRef.current.add(cId);
+      // Limpar IDs antigos para não crescer indefinidamente
+      if (processedContractsRef.current.size > 50) processedContractsRef.current.clear();
 
       derivService.send({ balance: 1, subscribe: 1 });
 

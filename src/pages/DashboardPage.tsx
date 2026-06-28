@@ -56,7 +56,7 @@ function useSessionTimer(running: boolean) {
 }
 
 // ── Hook: logs em tempo real ──────────────────────────────────────────────────
-function useLogEntries(max = 60) {
+function useLogEntries(max = 500) {
   const [entries, setEntries] = useState<LogEntry[]>(() => logger.getAll().slice(-max));
   useEffect(() => {
     const unsub = logger.subscribe((e) => {

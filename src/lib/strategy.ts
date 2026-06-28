@@ -10,7 +10,7 @@ import {
 // ─── Perfis ────────────────────────────────────────────────────────────────────
 export const STRATEGY_PROFILES: Record<StrategyProfile, StrategyProfileConfig> = {
   conservative: {
-    minConfidenceOverride: 78,
+    minConfidenceOverride: 72,
     requireTrending: false,        // relaxado: agora usamos mean-reversion também
     dominanceMultiplier: 1.40,
     minWinScore: 72,
@@ -23,7 +23,7 @@ export const STRATEGY_PROFILES: Record<StrategyProfile, StrategyProfileConfig> =
     maxExhaustionScore: 15,
   },
   balanced: {
-    minConfidenceOverride: 68,
+    minConfidenceOverride: 63, // reduzido: CHOPPY a 70% ganha, a 60-65% provavelmente também
     requireTrending: false,
     dominanceMultiplier: 1.22,
     minWinScore: 58,
@@ -139,17 +139,21 @@ export const analyzeMarket = (
     );
 
   // ── 7. Freshness ─────────────────────────────────────────────────────────────
-  // NOTA: emaDist NÃO entra aqui — em synthetic indices (V100=9000) / ATR (0.5)
-  // produz emaDist=30 que aniquila freshness sempre. Freshness usa APENAS
-  // consecutiveCount numa janela de 10 candles para ser independente da escala de preço.
-  const freshWindow = candles.slice(-10);
+  // USA CANDLES COMPLETOS (slice(-11,-1)) — não o candle actual que acabou de abrir
+  // com open=close, o que fazia consec10=0 e freshness=10 sempre.
+  // A análise dispara no primeiro tick do novo candle (open=close=neutral),
+  // por isso a direção real está nos candles ANTERIORES completados.
+  const completedWindow = candles.slice(-11, -1).filter(c => c.close !== c.open);
   let consec10 = 0;
-  for (let i = freshWindow.length - 1; i >= 0; i--) {
-    const c = freshWindow[i];
-    if (c.close === c.open) continue; // ignorar neutros
-    const d = c.close > c.open ? "UP" : "DOWN";
-    if (d === currentDir) consec10++;
-    else break;
+  let freshDir: "UP" | "DOWN" | null = null;
+  if (completedWindow.length > 0) {
+    const lastComp = completedWindow[completedWindow.length - 1];
+    freshDir = lastComp.close > lastComp.open ? "UP" : "DOWN";
+    for (let i = completedWindow.length - 1; i >= 0; i--) {
+      const d = completedWindow[i].close > completedWindow[i].open ? "UP" : "DOWN";
+      if (d === freshDir) consec10++;
+      else break;
+    }
   }
 
   // Mean Reversion: quanto mais consecutivos, melhor (é o setup que queremos)
@@ -315,7 +319,10 @@ export const analyzeMarket = (
     let conf = Math.min(60, (dominantScore / 130) * 60);
 
     // Confirmações adicionam confiança
-    if (marketCondition === "TRENDING" && signalMode === "TREND") conf += 10;
+    // DADOS REAIS: TRENDING=25% WR, CHOPPY=100% WR em V100 1s
+    // → TRENDING recebe penalização (não bónus), CHOPPY recebe bónus
+    if (marketCondition === "CHOPPY" && signalMode === "TREND") conf += 8;
+    if (marketCondition === "TRENDING" && signalMode === "TREND") conf -= 6; // trending 1s = exaustão iminente
     if (signalMode === "MEAN_REVERSION") conf += 8; // mean reversion é bom sinal
     if (macdTrend === (type === "CALL" ? "UP" : "DOWN") && macdStrong) conf += 8;
     if (trendFreshnessScore > 7) conf += 5;

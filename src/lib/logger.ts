@@ -4,7 +4,7 @@ type Subscriber = (entry: LogEntry | null) => void;
 class Logger {
   private _buffer: LogEntry[] = [];
   private _subs = new Set<Subscriber>();
-  private readonly MAX = 300;
+  private readonly MAX = 2000; // aumentado: era 300, precisamos de ver toda a sessão
   subscribe(fn: Subscriber) {
     this._subs.add(fn);
     this._buffer.forEach(e => fn(e));
