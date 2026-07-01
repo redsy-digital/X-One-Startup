@@ -72,7 +72,7 @@ function exportLogsPDF(entries: LogEntry[]) {
 
 // ── LogsPanel ─────────────────────────────────────────────────────────────────
 export const LogsPanel = () => {
-  const [entries, setEntries] = useState<LogEntry[]>(() => logger.getAll());
+  const [entries, setEntries] = useState<LogEntry[]>(() => logger.getAll()); // SEM LIMITE
   const [activeFilters, setActiveFilters] = useState<Set<LogLevel>>(new Set(ALL_LEVELS));
   const [newActivityCount, setNewActivityCount] = useState(0);
   const [isAtBottom, setIsAtBottom] = useState(true);
@@ -82,7 +82,7 @@ export const LogsPanel = () => {
   useEffect(() => {
     const unsub = logger.subscribe((entry) => {
       if (!entry) { setEntries([]); setNewActivityCount(0); return; }
-      setEntries(prev => [...prev.slice(-299), entry]);
+      setEntries(prev => [...prev, entry]); // SEM LIMITE
       if (!isAtBottomRef.current) setNewActivityCount(c => c + 1);
     });
     return unsub;

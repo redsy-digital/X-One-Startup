@@ -47,31 +47,53 @@ const saveToLocalStorage = (trade: TradeHistory) => {
 const saveToSupabase = async (trade: TradeHistory) => {
   try {
     const { data: { user } } = await supabase.auth.getUser();
-    if (!user) return; // sem sessão — só localStorage
+    if (!user) return;
 
-    const row = {
-      id: trade.id,
-      user_id: user.id,
-      time: trade.time,
-      symbol: trade.symbol,
-      type: trade.type,
-      stake: trade.stake,
-      status: trade.status,
-      profit: trade.profit ?? null,
-      entry_price: trade.entryPrice ?? null,
-      exit_price: trade.exitPrice ?? null,
-      confidence: trade.confidence ?? null,
-      score: trade.score ?? null,
-      indicators: trade.indicators ?? null,
-    };
+    const isResult = trade.status === "WON" || trade.status === "LOST";
 
-    const { error } = await supabase
-      .from("trade_history")
-      .upsert(row, { onConflict: "id,user_id" });
+    if (isResult) {
+      // WIN/LOSS: só actualiza os campos de resultado — preserva indicators/confidence do PENDING
+      const { error } = await supabase
+        .from("trade_history")
+        .update({
+          status: trade.status,
+          profit: trade.profit ?? null,
+          entry_price: trade.entryPrice ?? null,
+          exit_price: trade.exitPrice ?? null,
+        })
+        .eq("id", trade.id)
+        .eq("user_id", user.id);
 
-    if (error) {
-      logger.error("[Storage] Supabase upsert error:");
-      console.error("[Storage] Supabase upsert error:", error.message);
+      if (error) {
+        logger.error(`[Storage] update WIN/LOSS error: ${error.message}`);
+        console.error("[Storage] update error:", error.message);
+      }
+    } else {
+      // PENDING ou novo trade: upsert completo com todos os campos
+      const row = {
+        id: trade.id,
+        user_id: user.id,
+        time: trade.time,
+        symbol: trade.symbol,
+        type: trade.type,
+        stake: trade.stake,
+        status: trade.status,
+        profit: trade.profit ?? null,
+        entry_price: trade.entryPrice ?? null,
+        exit_price: trade.exitPrice ?? null,
+        confidence: trade.confidence ?? null,
+        score: trade.score ?? null,
+        indicators: trade.indicators ?? null,
+      };
+
+      const { error } = await supabase
+        .from("trade_history")
+        .upsert(row, { onConflict: "id,user_id" });
+
+      if (error) {
+        logger.error(`[Storage] upsert error: ${error.message}`);
+        console.error("[Storage] Supabase upsert error:", error.message);
+      }
     }
   } catch (e) {
     logger.error("[Storage] Supabase save error");
