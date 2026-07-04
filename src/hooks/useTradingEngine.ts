@@ -101,6 +101,9 @@ export function useTradingEngine(
 
   // Trade manual
   const isManualTradeRef = useRef(false);
+  // Captura o sinal EXACTAMENTE no momento da decisão de entrada
+  // (lastSignalRef actualiza a cada tick — 3-5s depois o buy confirma com sinal diferente)
+  const entrySignalRef = useRef<TradeSignal | null>(null);
   const placeTrade = useCallback(
     (type: "CALL" | "PUT") => {
       if (!isAuthorized || isProcessingTradeRef.current) return;
@@ -109,6 +112,7 @@ export function useTradingEngine(
       isProcessingTradeRef.current = true;
       setIsProcessing(true);
       logger.trade(`▶ Trade manual ${type} | $${stake.toFixed(2)} | ${symbol}`);
+      entrySignalRef.current = lastSignalRef.current; // captura sinal manual
       derivService.getPriceProposal(symbol, type, stake, 5, "t");
     },
     [isAuthorized, symbol, stake]
@@ -200,6 +204,7 @@ export function useTradingEngine(
     }
 
     logger.trade(`▶ Proposta ${analysis.type} | $${currentStake.toFixed(2)} | ${symbol} | Conf: ${analysis.confidence}%`);
+    entrySignalRef.current = analysis; // captura sinal de entrada exacto
     isProcessingTradeRef.current = true;
     setIsProcessing(true);
     lastActionTimeRef.current = now;
@@ -257,10 +262,10 @@ export function useTradingEngine(
           type: structure.lastTradeTypeRef.current || "CALL",
           stake: buy.buy_price,
           status: "PENDING",
-          confidence: lastSignalRef.current?.confidence,
-          score: lastSignalRef.current?.indicators.score,
-          indicators: lastSignalRef.current?.indicators
-            ? { ...lastSignalRef.current.indicators, structureId: structure.currentStructureIdRef.current }
+          confidence: entrySignalRef.current?.confidence, // sinal exacto de entrada
+          score: entrySignalRef.current?.indicators?.score,
+          indicators: entrySignalRef.current?.indicators
+            ? { ...entrySignalRef.current.indicators, structureId: structure.currentStructureIdRef.current }
             : undefined,
         });
       }

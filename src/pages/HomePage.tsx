@@ -180,7 +180,7 @@ export const HomePage = () => {
             {/* Imagem */}
             <img
               src="/images/meu_retrato.png"
-              alt="Pedro dos Santos — Criador do X-ONE"
+              alt="Pedro dos Santos — 'Criador' do X-ONE"
               className="relative z-10 w-full object-cover"
               style={{
                 borderRadius: "20px",

@@ -25,7 +25,7 @@ export const DEFAULT_SETTINGS: BotSettings = {
   targetProfit: 10,
   stopLoss: 5,
   minConfidence: 70,
-  cooldownSeconds: 5,
+  cooldownSeconds: 10, // aumentado: dados mostram clusters de 3 trades em 11s → entradas correlacionadas
   strategyProfile: "balanced",
   useMartingale: true,
   martingaleMultiplier: 2.1,
