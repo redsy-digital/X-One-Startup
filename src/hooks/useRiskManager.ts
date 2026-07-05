@@ -87,7 +87,7 @@ export function useRiskManager(
     setMartingaleStep(0);
 
     if (config.useSoros) {
-      const nextStake = currentStake + profit;
+      const nextStake = Math.round((currentStake + profit) * 100) / 100;
       setCurrentStake(nextStake);
       setSorosLevel((prev) => {
         const next = prev + 1;
@@ -108,7 +108,7 @@ export function useRiskManager(
 
     if (config.useMartingale && martingaleStep < config.maxMartingaleSteps) {
       const nextStep = martingaleStep + 1;
-      const nextStakeVal = config.stake * Math.pow(config.martingaleMultiplier, nextStep);
+      const nextStakeVal = Math.round(config.stake * Math.pow(config.martingaleMultiplier, nextStep) * 100) / 100;
       logger.risk(`Martingale step ${nextStep}/${config.maxMartingaleSteps} | Próxima stake: $${nextStakeVal.toFixed(2)}`);
       setMartingaleStep(nextStep);
       setCurrentStake(nextStakeVal);

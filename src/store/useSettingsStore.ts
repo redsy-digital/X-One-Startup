@@ -24,7 +24,7 @@ export const DEFAULT_SETTINGS: BotSettings = {
   stake: 1,
   targetProfit: 10,
   stopLoss: 5,
-  minConfidence: 70,
+  minConfidence: 50, // dados 04/07: conf 50-59% → 64% WR; conf 40-49% → 24% WR
   cooldownSeconds: 10, // aumentado: dados mostram clusters de 3 trades em 11s → entradas correlacionadas
   strategyProfile: "balanced",
   useMartingale: true,

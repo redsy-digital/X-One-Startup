@@ -130,11 +130,14 @@ export const analyzeMarket = (
   const isTrend      = mktCond === "TRENDING";
   const signalMode   = isSuper || isCompressed ? "BLOCKED" : isMR ? "MEAN_REVERSION" : "TREND";
 
-  if (signalMode === "BLOCKED") {
-    return makeNeutral(
-      isSuper ? "Super-CHOPPY: mercado aleatório" : "EMA comprimida: sem setup MR",
-      mktCond
-    );
+  // TRENDING com EMA demasiado comprimida: dados 04/07 mostram 0% WR em EMA < 0.02%
+  const trendCompressed = mktCond === "TRENDING" && emaDistPct < 0.015;
+
+  if (signalMode === "BLOCKED" || trendCompressed) {
+    const msg = isSuper ? "Super-CHOPPY: mercado aleatório"
+              : isCompressed ? "EMA comprimida: sem setup MR"
+              : "TRENDING comprimido: preço na EMA";
+    return makeNeutral(msg, mktCond);
   }
 
   // ── Freshness (candles COMPLETOS, não o actual em formação) ────────────────
@@ -291,10 +294,15 @@ export const analyzeMarket = (
 
       confidence = Math.max(0, Math.min(95, Math.round(conf)));
     } else {
+      // TREND confidence — calibrada para zona alvo 50-70%
+      // Dados 04/07: conf 50-59% → 64% WR; conf 40-49% → 24% WR
       const dom = type === "CALL" ? callScore : putScore;
-      let conf = Math.min(50, (dom / 130) * 50);
-      if (adx > 30)                                  conf +=  8;
+      let conf = Math.min(55, (dom / 130) * 55); // base ligeiramente mais alta
+      if (adx > 30)                                  conf += 10;
+      else if (adx > 25)                             conf +=  5;
       if (macdStrong && macdDir === currentDir)      conf +=  8;
+      else if (macdDir === currentDir)               conf +=  3;
+      if (diSep && adxStrong)                        conf +=  5; // tendência confirmada por DI
       if (trendFreshnessScore > 6)                   conf +=  5;
       else if (trendFreshnessScore < 4)              conf -=  8;
       if (timingScore > 7)                           conf +=  4;
