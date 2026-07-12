@@ -23,13 +23,13 @@ export interface BotSettings {
 export const DEFAULT_SETTINGS: BotSettings = {
   stake: 1,
   targetProfit: 10,
-  stopLoss: 5,
+  stopLoss: 12, // compatível com 3 steps Martingale: acumulado máx $7.51
   minConfidence: 50, // dados 04/07: conf 50-59% → 64% WR; conf 40-49% → 24% WR
   cooldownSeconds: 10, // aumentado: dados mostram clusters de 3 trades em 11s → entradas correlacionadas
   strategyProfile: "balanced",
   useMartingale: true,
   martingaleMultiplier: 2.1,
-  maxMartingaleSteps: 5,
+  maxMartingaleSteps: 3, // step3($9.26)=0%WR; steps 0-2 têm 44-67%WR
   useSoros: false,
   maxSorosLevels: 3,
   maxConsecutiveLosses: 5,
