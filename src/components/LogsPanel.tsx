@@ -176,7 +176,6 @@ export const LogsPanel = () => {
           ref={scrollRef}
           onScroll={handleScroll}
           className="h-full overflow-y-auto p-3 space-y-1 font-mono"
-                style={{ overscrollBehavior: "contain" }}
           style={{
             scrollbarWidth: "thin",
             scrollbarColor: "rgba(124,58,237,0.3) transparent",

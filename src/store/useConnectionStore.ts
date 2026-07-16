@@ -144,7 +144,7 @@ export const useConnectionStore = create<ConnectionState>((set, get) => ({
       const demoAccount = accounts.find((a) => a.is_demo) ?? accounts[0];
 
       // 4. Guardar no Supabase
-      await supabase.from("deriv_connections").upsert(
+      const { error: upsertError } = await supabase.from("deriv_connections").upsert(
         {
           user_id: supabaseUser.id,
           account_id: demoAccount.account_id,
@@ -157,6 +157,14 @@ export const useConnectionStore = create<ConnectionState>((set, get) => ({
         },
         { onConflict: "user_id" }
       );
+
+      if (upsertError) {
+        // Não bloqueia a ligação em curso (o WebSocket avança na mesma),
+        // mas antes este erro desaparecia por completo — agora fica
+        // registado nos Logs para não passar despercebido.
+        logger.error(`[ConnectionStore] Falha ao guardar conexão Deriv no Supabase: ${upsertError.message}`);
+        console.error("[ConnectionStore] Erro ao guardar deriv_connections:", upsertError.message);
+      }
 
       // 5. Actualizar store
       set({
