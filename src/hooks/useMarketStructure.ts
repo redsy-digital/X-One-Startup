@@ -1,5 +1,16 @@
 import { useRef } from "react";
 import { Candle, TradeSignal } from "../types";
+import {
+  MarketStructureState,
+  StructureEvaluation,
+  createStructureState,
+  evaluateStructure as evaluateStructurePure,
+  recordStructureTrade,
+  recordStructureResult,
+  resetStructureSession,
+} from "../lib/marketStructure";
+
+export type { StructureEvaluation };
 
 export interface MarketStructureRefs {
   lastTradeResultRef: React.MutableRefObject<"WON" | "LOST" | null>;
@@ -10,118 +21,67 @@ export interface MarketStructureRefs {
   candlesSinceLastLossRef: React.MutableRefObject<number>;
 }
 
-export interface StructureEvaluation {
-  wasReset: boolean;
-  resetReason: string;
-  currentDirection: "UP" | "DOWN" | "CHOPPY";
-}
-
+/**
+ * Fase 2 da auditoria: a lógica de decisão (evaluateStructure, etc.) foi
+ * extraída para src/lib/marketStructure.ts, para ser partilhada com o
+ * backtest (runBacktest). Este hook passou a ser um wrapper fino sobre
+ * esse módulo puro — a API pública (as *Ref) mantém-se EXACTAMENTE igual
+ * à anterior, para não obrigar a nenhuma alteração em useTradingEngine.ts.
+ *
+ * Nota: candlesSinceLastLossRef continua a ser mutado directamente por
+ * useTradingEngine.ts (`.current += 1`) fora deste hook — por isso fica
+ * de fora da sincronização genérica com o state partilhado, exactamente
+ * como no comportamento original.
+ */
 export function useMarketStructure(): MarketStructureRefs & {
   evaluateStructure: (candles: Candle[], analysis: TradeSignal) => StructureEvaluation;
   recordTrade: (type: "CALL" | "PUT") => void;
   recordResult: (result: "WON" | "LOST") => void;
   resetSession: () => void;
 } {
-  const lastTradeResultRef = useRef<"WON" | "LOST" | null>(null);
-  const lastTradeTypeRef = useRef<"CALL" | "PUT" | null>(null);
-  const lastTradeStructureIdRef = useRef<string | null>(null);
-  const currentStructureIdRef = useRef<string>(
-    Math.random().toString(36).substring(7)
-  );
-  const currentStructureDirectionRef = useRef<"UP" | "DOWN" | "CHOPPY" | null>(null);
-  const candlesSinceLastLossRef = useRef<number>(0);
+  const stateRef = useRef<MarketStructureState>(createStructureState());
 
-  /**
-   * Avalia se a estrutura de mercado mudou e atualiza os refs.
-   * Retorna se houve reset e o motivo.
-   */
-  const evaluateStructure = (
-    candles: Candle[],
-    analysis: TradeSignal
-  ): StructureEvaluation => {
-    const newDir: "UP" | "DOWN" | "CHOPPY" =
-      analysis.indicators.marketCondition === "CHOPPY"
-        ? "CHOPPY"
-        : analysis.indicators.emaFast > analysis.indicators.emaSlow
-        ? "UP"
-        : "DOWN";
+  const lastTradeResultRef = useRef(stateRef.current.lastTradeResult);
+  const lastTradeTypeRef = useRef(stateRef.current.lastTradeType);
+  const lastTradeStructureIdRef = useRef(stateRef.current.lastTradeStructureId);
+  const currentStructureIdRef = useRef(stateRef.current.currentStructureId);
+  const currentStructureDirectionRef = useRef(stateRef.current.currentStructureDirection);
+  const candlesSinceLastLossRef = useRef(stateRef.current.candlesSinceLastLoss);
 
-    const last5 = candles.slice(-5);
-    const lastCandle = candles[candles.length - 1];
-
-    let shouldReset = false;
-    let resetReason = "";
-
-    if (newDir !== currentStructureDirectionRef.current) {
-      shouldReset = true;
-      resetReason = "Mudança de Direção Dominante";
-    } else if (newDir === "UP") {
-      const redCount = last5.filter((c) => c.close < c.open).length;
-      if (redCount >= 3) {
-        shouldReset = true;
-        resetReason = "Pullback Estrutural (3+ Red)";
-      } else if (lastCandle.close < analysis.indicators.emaSlow) {
-        shouldReset = true;
-        resetReason = "Quebra de Suporte (EMA Slow)";
-      }
-    } else if (newDir === "DOWN") {
-      const greenCount = last5.filter((c) => c.close > c.open).length;
-      if (greenCount >= 3) {
-        shouldReset = true;
-        resetReason = "Pullback Estrutural (3+ Green)";
-      } else if (lastCandle.close > analysis.indicators.emaSlow) {
-        shouldReset = true;
-        resetReason = "Quebra de Resistência (EMA Slow)";
-      }
-    }
-
-    if (
-      analysis.indicators.marketCondition === "CHOPPY" &&
-      currentStructureDirectionRef.current !== "CHOPPY"
-    ) {
-      shouldReset = true;
-      resetReason = "Entrada em Zona de Lateralização";
-    }
-
-    if (shouldReset) {
-      currentStructureIdRef.current = Math.random().toString(36).substring(7);
-      currentStructureDirectionRef.current = newDir;
-      if (analysis.indicators) {
-        analysis.indicators.structureResetReason = resetReason;
-      }
-    }
-
-    return { wasReset: shouldReset, resetReason, currentDirection: newDir };
+  // Sincroniza os 5 refs "gerais" a partir do state partilhado.
+  // candlesSinceLastLossRef NÃO entra aqui de propósito (ver nota acima).
+  const syncGeneralRefs = () => {
+    const s = stateRef.current;
+    lastTradeResultRef.current = s.lastTradeResult;
+    lastTradeTypeRef.current = s.lastTradeType;
+    lastTradeStructureIdRef.current = s.lastTradeStructureId;
+    currentStructureIdRef.current = s.currentStructureId;
+    currentStructureDirectionRef.current = s.currentStructureDirection;
   };
 
-  /**
-   * Registra que um trade foi executado (atualiza refs de disciplina).
-   */
+  const evaluateStructure = (candles: Candle[], analysis: TradeSignal): StructureEvaluation => {
+    const result = evaluateStructurePure(stateRef.current, candles, analysis);
+    syncGeneralRefs();
+    return result;
+  };
+
   const recordTrade = (type: "CALL" | "PUT") => {
-    lastTradeTypeRef.current = type;
-    lastTradeStructureIdRef.current = currentStructureIdRef.current;
+    recordStructureTrade(stateRef.current, type);
+    syncGeneralRefs();
   };
 
-  /**
-   * Registra o resultado de um trade liquidado.
-   */
   const recordResult = (result: "WON" | "LOST") => {
-    lastTradeResultRef.current = result;
+    recordStructureResult(stateRef.current, result);
+    syncGeneralRefs();
     if (result === "LOST") {
       candlesSinceLastLossRef.current = 0;
     }
   };
 
-  /**
-   * Reseta todos os refs de sessão (chamado no start do bot).
-   */
   const resetSession = () => {
-    lastTradeResultRef.current = null;
-    lastTradeTypeRef.current = null;
-    lastTradeStructureIdRef.current = null;
+    resetStructureSession(stateRef.current);
+    syncGeneralRefs();
     candlesSinceLastLossRef.current = 0;
-    currentStructureIdRef.current = Math.random().toString(36).substring(7);
-    currentStructureDirectionRef.current = null;
   };
 
   return {

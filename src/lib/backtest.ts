@@ -1,12 +1,21 @@
 import { Candle } from "../types";
 import { StrategyProfile } from "../types";
 import { analyzeMarket } from "./strategy";
+import {
+  createStructureState,
+  evaluateStructure,
+  recordStructureTrade,
+  recordStructureResult,
+  isBlockedByStructure,
+} from "./marketStructure";
 
 export interface BacktestConfig {
   stake: number;
   stopLoss: number;
   targetProfit: number;
   minConfidence: number;
+  cooldownSeconds: number;
+  cooldownAfterLoss: number;
   useMartingale: boolean;
   martingaleMultiplier: number;
   maxMartingaleSteps: number;
@@ -58,6 +67,23 @@ export interface BacktestResult {
   flatResult: { wins: number; losses: number; netPnL: number; winRate: number };
 }
 
+/**
+ * Fase 2 da auditoria: esta função foi reescrita para espelhar 1:1 a
+ * cadeia de filtros de useTradingEngine.ts (motor ao vivo), incluindo:
+ *  - avaliação de estrutura de mercado em TODOS os candles (não só nos
+ *    que geram trade), via o módulo partilhado lib/marketStructure.ts;
+ *  - bloqueio pós-perda (mesma direcção + mesma estrutura);
+ *  - freshness com o "modo-aware" (isMR) exactamente como ao vivo —
+ *    incluindo o facto de, hoje, essa condição nunca ser verdadeira
+ *    (ver nota no relatório da Fase 2: o texto procurado no reason não
+ *    bate certo com o que strategy.ts realmente produz). Mantido
+ *    idêntico de propósito, para o backtest reflectir o comportamento
+ *    REAL actual, não uma versão já corrigida;
+ *  - cooldown por tempo real entre trades (cooldownSeconds), usando o
+ *    timestamp de cada candle como proxy do "agora" que existiria ao vivo;
+ *  - cooldown pós-N-perdas-consecutivas (cooldownAfterLoss), com o mesmo
+ *    relógio (lastActionTime) que o cooldown normal — tal como ao vivo.
+ */
 export function runBacktest(
   candles: Candle[],
   symbol: string,
@@ -67,6 +93,7 @@ export function runBacktest(
   const {
     stake: baseStake,
     stopLoss, targetProfit, minConfidence,
+    cooldownSeconds, cooldownAfterLoss,
     useMartingale, martingaleMultiplier, maxMartingaleSteps,
     useSoros, maxSorosLevels,
     maxConsecutiveLosses, strategyProfile, payoutRate,
@@ -79,6 +106,11 @@ export function runBacktest(
   let martingaleStep = 0;
   let sorosLevel = 0;
   let peakBalance = initialBalance;
+  let lastActionTime = 0; // ms — 0 imita o useRef(0) inicial ao vivo
+
+  // Estrutura de mercado — mesma lógica partilhada com o motor ao vivo
+  const structureState = createStructureState();
+  let candlesSinceLastLoss = 0; // só para paridade estrutural; não filtra decisões (também não filtra ao vivo)
 
   // Métricas
   let wins = 0;
@@ -102,38 +134,65 @@ export function runBacktest(
   const balanceCurve: BacktestResult["balanceCurve"] = [{ index: 0, balance: initialBalance }];
   const stakeCurve: BacktestResult["stakeCurve"] = [];
 
-  // Mínimo de candles necessários para análise
+  // Mínimo de candles necessários para análise (igual ao mínimo de analyzeMarket)
   const MIN_CANDLES = 50;
   if (candles.length < MIN_CANDLES + 1) {
     return emptyResult("end", initialBalance);
   }
 
   for (let i = MIN_CANDLES; i < candles.length - 1; i++) {
-    // Verificar condições de paragem
+    // Verificar condições de paragem (equivalente ao useEffect de useRiskManager,
+    // que corre sempre que o saldo muda — aqui: no início de cada iteração,
+    // reflectindo o saldo resultante do trade anterior)
     const pnl = balance - initialBalance;
     if (pnl >= targetProfit) { stoppedBy = "target"; stoppedAtTrade = trades.length; break; }
     if (pnl <= -stopLoss) { stoppedBy = "stoploss"; stoppedAtTrade = trades.length; break; }
 
-    // Cooldown pós-perdas consecutivas
-    if (consecutiveLosses >= maxConsecutiveLosses) {
-      consecutiveLosses = 0; // reseta e continua
-    }
-
-    // Analisar sinal
     const slice = candles.slice(0, i + 1);
+    const nowMs = candles[i].time * 1000; // proxy do Date.now() ao vivo, usando o tempo real do candle
+
     const signal = analyzeMarket(slice, symbol, strategyProfile);
 
-    if (signal.type === "NEUTRAL" || signal.confidence < minConfidence) continue;
+    // evaluateStructure corre em TODOS os candles, tal como ao vivo
+    // (antes de qualquer verificação de NEUTRAL/filtros).
+    evaluateStructure(structureState, slice, signal);
+    if (structureState.lastTradeResult === "LOST") candlesSinceLastLoss += 1;
 
-    // Filtro de freshness e timing (replicar engine real)
-    if ((signal.indicators.trendFreshnessScore ?? 0) < 4) continue;
+    if (signal.type === "NEUTRAL") continue;
+
+    // Bloqueio pós-perda: mesma direcção, mesma estrutura
+    if (isBlockedByStructure(structureState, signal.type as "CALL" | "PUT")) continue;
+
+    // Freshness "modo-aware" — réplica exacta (incl. bug conhecido) do que
+    // useTradingEngine.ts faz hoje. Ver nota no relatório da Fase 2.
+    const freshness = signal.indicators.trendFreshnessScore ?? 0;
+    const isMR = signal.indicators.reason?.includes("Mean Reversion");
+    const freshnessMin = isMR ? 1 : 4;
+    if (freshness < freshnessMin) continue;
+
     if ((signal.indicators.timingQuality ?? 0) < 5) continue;
+    if (signal.confidence < minConfidence) continue;
+
+    // Cooldown por tempo real entre trades
+    const cooldownRemaining = cooldownSeconds * 1000 - (nowMs - lastActionTime);
+    if (cooldownRemaining > 0) continue;
+
+    // Cooldown pós-N-perdas-consecutivas — mesmo relógio (lastActionTime)
+    // que o cooldown normal, tal como ao vivo.
+    if (consecutiveLosses >= maxConsecutiveLosses) {
+      const cooldownMs = cooldownAfterLoss * 1000;
+      if (nowMs - lastActionTime < cooldownMs) continue;
+      consecutiveLosses = 0;
+    }
 
     // Determinar resultado: usa a DIRECÇÃO do próximo candle
     const nextCandle = candles[i + 1];
     const isWin = signal.type === "CALL"
       ? nextCandle.close > nextCandle.open
       : nextCandle.close < nextCandle.open;
+
+    recordStructureTrade(structureState, signal.type as "CALL" | "PUT");
+    lastActionTime = nowMs;
 
     const profit = isWin ? currentStake * payoutRate : -currentStake;
     balance += profit;
@@ -177,6 +236,9 @@ export function runBacktest(
 
     if (isWin) { wins++; } else { losses++; }
 
+    recordStructureResult(structureState, isWin ? "WON" : "LOST");
+    if (!isWin) candlesSinceLastLoss = 0;
+
     // Actualizar stake para próxima operação
     if (isWin) {
       consecutiveLosses = 0;
@@ -186,7 +248,7 @@ export function runBacktest(
           currentStake = baseStake;
           sorosLevel = 0;
         } else {
-          currentStake = currentStake + profit;
+          currentStake = Math.round((currentStake + profit) * 100) / 100;
         }
       } else {
         martingaleStep = 0;
@@ -197,7 +259,7 @@ export function runBacktest(
       sorosLevel = 0;
       if (useMartingale && martingaleStep < maxMartingaleSteps) {
         martingaleStep++;
-        currentStake = baseStake * Math.pow(martingaleMultiplier, martingaleStep);
+        currentStake = Math.round(baseStake * Math.pow(martingaleMultiplier, martingaleStep) * 100) / 100;
       } else {
         martingaleStep = 0;
         currentStake = baseStake;

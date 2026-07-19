@@ -1,11 +1,12 @@
 import React, { useState, useCallback } from "react";
-import { BarChart3, Play, TrendingUp, TrendingDown, AlertTriangle, CheckCircle, XCircle, Loader2 } from "lucide-react";
+import { BarChart3, Play, TrendingUp, TrendingDown, AlertTriangle, CheckCircle, XCircle, Loader2, Download } from "lucide-react";
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, ReferenceLine } from "recharts";
 import { cn } from "../lib/utils";
 import { NeonCard } from "./NeonCard";
 import { Button } from "./ui/button";
 import { Badge } from "./ui/badge";
 import { runBacktest, BacktestResult } from "../lib/backtest";
+import { downloadCandleDataset } from "../lib/dataset";
 import { useSettingsStore } from "../store/useSettingsStore";
 import { useMarketStore } from "../store/useMarketStore";
 
@@ -66,6 +67,8 @@ export const BacktestPanel = () => {
         stopLoss: settings.stopLoss,
         targetProfit: settings.targetProfit,
         minConfidence: settings.minConfidence,
+        cooldownSeconds: settings.cooldownSeconds,
+        cooldownAfterLoss: settings.cooldownAfterLoss,
         useMartingale: settings.useMartingale,
         martingaleMultiplier: settings.martingaleMultiplier,
         maxMartingaleSteps: settings.maxMartingaleSteps,
@@ -82,6 +85,10 @@ export const BacktestPanel = () => {
       setRunning(false);
     }
   }, [candles, symbol, settings]);
+
+  const handleExportDataset = useCallback(() => {
+    downloadCandleDataset(candles, symbol);
+  }, [candles, symbol]);
 
   const stoppedLabel: Record<string, { text: string; color: string; icon: React.ReactNode }> = {
     target:     { text: "Take Profit atingido", color: "text-green-400", icon: <CheckCircle className="w-3.5 h-3.5" /> },
@@ -108,14 +115,25 @@ export const BacktestPanel = () => {
               Payout simulado: {(PAYOUT_RATE * 100).toFixed(0)}% · Saldo inicial: ${INITIAL_BALANCE}
             </p>
           </div>
-          <Button
-            onClick={handleRun}
-            disabled={running || candles.length < 51}
-            className="shrink-0 bg-purple-600 hover:bg-purple-700 font-black uppercase text-[11px] gap-2 h-9"
-          >
-            {running ? <Loader2 className="w-4 h-4 animate-spin" /> : <Play className="w-4 h-4" />}
-            {running ? "A simular..." : "Executar"}
-          </Button>
+          <div className="flex flex-col gap-2 shrink-0">
+            <Button
+              onClick={handleRun}
+              disabled={running || candles.length < 51}
+              className="bg-purple-600 hover:bg-purple-700 font-black uppercase text-[11px] gap-2 h-9"
+            >
+              {running ? <Loader2 className="w-4 h-4 animate-spin" /> : <Play className="w-4 h-4" />}
+              {running ? "A simular..." : "Executar"}
+            </Button>
+            <Button
+              onClick={handleExportDataset}
+              disabled={candles.length === 0}
+              variant="outline"
+              title="Guarda os candles actuais como dataset de referência (Fase 2)"
+              className="font-black uppercase text-[10px] gap-2 h-8"
+            >
+              <Download className="w-3.5 h-3.5" /> Exportar dataset
+            </Button>
+          </div>
         </div>
 
         {error && (
