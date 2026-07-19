@@ -22,7 +22,7 @@ import {
 export const STRATEGY_PROFILES: Record<StrategyProfile, StrategyProfileConfig> = {
   conservative: {
     minConfidenceOverride: 74,
-    requireTrending: false,
+    requireTrending: true,
     dominanceMultiplier: 1.30,
     minWinScore: 60,
     freshnessWeight: 1.2,
@@ -133,8 +133,14 @@ export const analyzeMarket = (
   // TRENDING com EMA demasiado comprimida: dados 04/07 mostram 0% WR em EMA < 0.02%
   const trendCompressed = mktCond === "TRENDING" && emaDistPct < 0.015;
 
-  if (signalMode === "BLOCKED" || trendCompressed) {
-    const msg = isSuper ? "Super-CHOPPY: mercado aleatório"
+  // requireTrending (por perfil): implementado de verdade — antes o campo
+  // existia na config e era mostrado na UI ("Só opera em TRENDING"), mas
+  // nunca era lido aqui, logo não tinha nenhum efeito real.
+  const blockedByProfile = cfg.requireTrending && mktCond !== "TRENDING";
+
+  if (signalMode === "BLOCKED" || trendCompressed || blockedByProfile) {
+    const msg = blockedByProfile ? "Perfil exige TRENDING (mercado CHOPPY)"
+              : isSuper ? "Super-CHOPPY: mercado aleatório"
               : isCompressed ? "EMA comprimida: sem setup MR"
               : "TRENDING comprimido: preço na EMA";
     return makeNeutral(msg, mktCond);

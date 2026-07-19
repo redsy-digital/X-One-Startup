@@ -49,19 +49,42 @@ describe("analyzeMarket — invariantes (não prevêem direcção exacta)", () =
   });
 });
 
-describe("STRATEGY_PROFILES — requireTrending (achado da auditoria)", () => {
-  // A Fase 1/2 da auditoria encontrou uma inconsistência: a UI
-  // (StrategyPanel.tsx) descreve o perfil "conservative" como
-  // "Só opera em TRENDING", mas requireTrending está a false nos
-  // 3 perfis e analyzeMarket() nunca lê este campo — ou seja, hoje
-  // ele não tem NENHUM efeito real na geração de sinais.
+describe("STRATEGY_PROFILES — requireTrending (implementado na Fase 2)", () => {
+  // A auditoria encontrou esta inconsistência: a UI (StrategyPanel.tsx)
+  // sempre descreveu o perfil "conservative" como "Só opera em TRENDING",
+  // mas requireTrending nunca era lido por analyzeMarket() — não tinha
+  // nenhum efeito real. O usuário decidiu implementar de verdade.
   //
-  // Este teste fixa o comportamento ACTUAL (não o desejado). Se a
-  // Fase 3 decidir implementar requireTrending de verdade, este
-  // teste deve ser actualizado conscientemente nessa altura.
-  it("está a false nos 3 perfis (comportamento actual, não implementado)", () => {
-    expect(STRATEGY_PROFILES.conservative.requireTrending).toBe(false);
+  // "conservative" passou a true (é o único cuja descrição na UI já
+  // prometia isto); "balanced"/"aggressive" continuam false, consistente
+  // com as suas próprias descrições ("qualquer mercado").
+  it("está activo só no perfil conservador", () => {
+    expect(STRATEGY_PROFILES.conservative.requireTrending).toBe(true);
     expect(STRATEGY_PROFILES.balanced.requireTrending).toBe(false);
     expect(STRATEGY_PROFILES.aggressive.requireTrending).toBe(false);
+  });
+
+  it("perfil conservador: só é não-NEUTRAL quando marketCondition é TRENDING", () => {
+    const scenarios = [
+      makeFlatCandles(80),
+      makeTrendingCandles(80, { step: 0.3 }),
+      makeTrendingCandles(80, { step: -0.3 }),
+      makeChoppyCandles(80, { seed: 7 }),
+      makeChoppyCandles(80, { seed: 3, amplitude: 0.5 }),
+      makeChoppyCandles(200, { seed: 123, amplitude: 0.7 }),
+    ];
+    for (const candles of scenarios) {
+      const result = analyzeMarket(candles, "R_100", "conservative");
+      if (result.type !== "NEUTRAL") {
+        expect(result.indicators.marketCondition).toBe("TRENDING");
+      }
+    }
+  });
+
+  it("perfil conservador em mercado CHOPPY: NEUTRAL com motivo explícito", () => {
+    const result = analyzeMarket(makeChoppyCandles(80, { seed: 7 }), "R_100", "conservative");
+    expect(result.indicators.marketCondition).toBe("CHOPPY");
+    expect(result.type).toBe("NEUTRAL");
+    expect(result.indicators.reason).toContain("Perfil exige TRENDING");
   });
 });
