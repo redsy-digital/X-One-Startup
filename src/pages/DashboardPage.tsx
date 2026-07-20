@@ -165,7 +165,7 @@ const ResultModal = ({ type, amount, onClose }: { type: "profit" | "loss"; amoun
 export const DashboardPage = () => {
   const navigate = useNavigate();
   const { isAuthorized, activeAccount } = useConnectionStore();
-  const { isBotRunning, setIsBotRunning } = useBotStore();
+  const { isBotRunning, setIsBotRunning, lossCooldown } = useBotStore();
   const { symbol, setSymbol, candles, ticks, timeframe, setTimeframe } = useMarketStore();
   const { settings } = useSettingsStore();
   const { lastSignal } = useSignalStore();
@@ -174,6 +174,18 @@ export const DashboardPage = () => {
   const logEntries = useLogEntries(60);
   const timer = useSessionTimer(isBotRunning);
   const [showAcertos, setShowAcertos] = useState(false);
+  const [nowTick, setNowTick] = useState(() => Date.now());
+  useEffect(() => {
+    if (!lossCooldown) return;
+    const id = setInterval(() => {
+      const t = Date.now();
+      setNowTick(t);
+      if (t >= lossCooldown.until) clearInterval(id);
+    }, 1000);
+    return () => clearInterval(id);
+  }, [lossCooldown]);
+  const cooldownRemainingSec = lossCooldown ? Math.max(0, Math.ceil((lossCooldown.until - nowTick) / 1000)) : 0;
+  const showCooldownBanner = !!lossCooldown && cooldownRemainingSec > 0;
   
 
   // Fix 3: histórico local actualizado em tempo real
@@ -303,6 +315,15 @@ export const DashboardPage = () => {
               {isBotRunning ? "Stop" : "Start"}
             </button>
           </div>
+
+          {showCooldownBanner && (
+            <div className="flex items-center gap-2 px-3 py-2 rounded-lg border border-amber-500/30 bg-amber-500/10 text-amber-400">
+              <AlertTriangle className="w-4 h-4 shrink-0" />
+              <p className="text-[10px] font-bold leading-tight">
+                Cooldown de risco activo — retoma em {cooldownRemainingSec}s
+              </p>
+            </div>
+          )}
         </div>
 
         {/* ══ COLUNA DIREITA ══════════════════════════════════════════════ */}

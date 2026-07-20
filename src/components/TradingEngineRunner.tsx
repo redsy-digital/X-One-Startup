@@ -76,7 +76,16 @@ export const TradingEngineRunner = () => {
       onWin: riskActions.onWin,
       onLoss: riskActions.onLoss,
       onForceStop: (reason: string) => {
-        logger.risk(`Bot pausado automaticamente: ${reason}`);
+        // Antes dizia "Bot pausado automaticamente" — mas o bot NÃO pára,
+        // entra num cooldown temporário e retoma sozinho (é esse o design:
+        // maxConsecutiveLosses + cooldownAfterLoss são dois campos
+        // separados de propósito). A mensagem antiga dava a entender que
+        // tinha parado de vez, o que não é verdade.
+        logger.risk(`Cooldown de risco activado: ${reason}`);
+        useBotStore.getState().setLossCooldown({
+          reason,
+          until: Date.now() + cooldownAfterLoss * 1000,
+        });
       },
     },
     isBotRunningRef
