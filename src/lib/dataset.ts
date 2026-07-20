@@ -1,19 +1,11 @@
 import { Candle } from "../types";
+import { derivService } from "./deriv";
 
 /**
  * Fase 2 da auditoria, item 10 — "criar um conjunto de dados de referência".
- *
- * Não há forma de obter aqui, no ambiente de análise, histórico real da
- * Deriv (a API é só WebSocket, não um endpoint que se possa simplesmente
- * ler à distância, e não há acesso de rede neste ambiente). A alternativa
- * prática: exportar os candles que a própria aplicação já tem em memória
- * (useMarketStore) durante uma sessão ao vivo, para ires construindo um
- * dataset real ao longo do tempo, capturando diferentes condições de
- * mercado (TRENDING, CHOPPY, etc.) em ficheiros separados.
- *
- * Uso sugerido: liga-te num símbolo, deixa a app a receber candles reais
- * por uns minutos/horas, depois exporta. Repete em dias/condições
- * diferentes para acumulares um dataset variado.
+ * Fase 3, etapa 3.0 — passou a puxar um lote grande directamente da Deriv
+ * (requestTicksHistory já aceita um `count` maior), em vez de depender só
+ * do que já estava em memória (até 500 candles).
  */
 
 export interface CandleDataset {
@@ -49,4 +41,50 @@ export function downloadCandleDataset(candles: Candle[], symbol: string): void {
   a.click();
   document.body.removeChild(a);
   URL.revokeObjectURL(url);
+}
+
+/**
+ * Pede um lote histórico grande directamente da Deriv (via WebSocket já
+ * ligado) e descarrega-o como dataset assim que chegar.
+ *
+ * IMPORTANTE — partilha o mesmo canal de eventos "candles" que a app usa
+ * para carregar o histórico normal (App.tsx). Isto significa que, ao
+ * chamar isto, o buffer normal de candles (useMarketStore) TAMBÉM vai
+ * ser substituído temporariamente por este lote maior — inofensivo com
+ * o bot parado, mas por isso é que o botão que chama isto só deve ficar
+ * activo com o bot desligado. Depois de exportar, troca de símbolo ou
+ * volta a ligar para o gráfico voltar ao normal.
+ *
+ * A Deriv pode rejeitar `count` muito grande (não há como confirmar o
+ * limite exacto sem uma chamada real) — nesse caso o erro é reportado
+ * via onError em vez de descarregar um ficheiro vazio.
+ */
+export function fetchAndDownloadHistoricalDataset(
+  symbol: string,
+  granularitySeconds: number,
+  count: number,
+  onError: (message: string) => void,
+  onSuccess: (candleCount: number) => void
+): void {
+  const unsubscribe = derivService.on("candles", (data: any) => {
+    unsubscribe();
+    if (data.error) {
+      onError(data.error.message || "Erro desconhecido ao pedir histórico à Deriv.");
+      return;
+    }
+    if (!data.candles?.length) {
+      onError("A Deriv devolveu 0 candles para este pedido.");
+      return;
+    }
+    const candles: Candle[] = data.candles.map((c: any) => ({
+      time: Number(c.epoch),
+      open: Number(c.open),
+      high: Number(c.high),
+      low: Number(c.low),
+      close: Number(c.close),
+    }));
+    downloadCandleDataset(candles, symbol);
+    onSuccess(candles.length);
+  });
+  derivService.requestTicksHistory(symbol, count, granularitySeconds);
 }

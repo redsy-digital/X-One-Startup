@@ -6,9 +6,10 @@ import { NeonCard } from "./NeonCard";
 import { Button } from "./ui/button";
 import { Badge } from "./ui/badge";
 import { runBacktest, BacktestResult } from "../lib/backtest";
-import { downloadCandleDataset } from "../lib/dataset";
+import { downloadCandleDataset, fetchAndDownloadHistoricalDataset } from "../lib/dataset";
 import { useSettingsStore } from "../store/useSettingsStore";
 import { useMarketStore } from "../store/useMarketStore";
+import { useBotStore } from "../store/useBotStore";
 
 const PAYOUT_RATE = 0.92; // 92% — valor típico Deriv para opções de 5 ticks
 const INITIAL_BALANCE = 1000;
@@ -44,10 +45,26 @@ const ChartTooltip = ({ active, payload }: any) => {
 // ── Componente principal ──────────────────────────────────────────────────────
 export const BacktestPanel = () => {
   const { settings } = useSettingsStore();
-  const { candles, symbol } = useMarketStore();
+  const { candles, symbol, timeframe } = useMarketStore();
+  const { isBotRunning } = useBotStore();
   const [result, setResult] = useState<BacktestResult | null>(null);
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [historyCount, setHistoryCount] = useState(5000);
+  const [fetchingHistory, setFetchingHistory] = useState(false);
+  const [historyMsg, setHistoryMsg] = useState<string | null>(null);
+
+  const handleFetchLargeHistory = useCallback(() => {
+    setFetchingHistory(true);
+    setHistoryMsg(null);
+    fetchAndDownloadHistoricalDataset(
+      symbol,
+      timeframe,
+      historyCount,
+      (msg) => { setFetchingHistory(false); setHistoryMsg(`Erro: ${msg}`); },
+      (count) => { setFetchingHistory(false); setHistoryMsg(`${count} candles reais exportados.`); }
+    );
+  }, [symbol, timeframe, historyCount]);
 
   const handleRun = useCallback(async () => {
     if (candles.length < 51) {
@@ -135,6 +152,34 @@ export const BacktestPanel = () => {
             </Button>
           </div>
         </div>
+
+        {/* Fase 3.0: puxar lote histórico grande directamente da Deriv */}
+        <div className="mt-3 pt-3 border-t border-white/10 flex items-center gap-2 flex-wrap">
+          <input
+            type="number" min={1} max={20000} step={100} value={historyCount}
+            onChange={(e) => setHistoryCount(Math.max(1, Number(e.target.value) || 1))}
+            className="w-24 h-8 rounded-lg bg-black/30 border border-white/10 text-[11px] px-2 text-white"
+          />
+          <Button
+            onClick={handleFetchLargeHistory}
+            disabled={isBotRunning || fetchingHistory}
+            variant="outline"
+            title={isBotRunning ? "Desliga o bot primeiro — isto troca temporariamente o buffer de candles" : "Pede candles reais directamente à Deriv e descarrega como dataset"}
+            className="font-black uppercase text-[10px] gap-2 h-8"
+          >
+            {fetchingHistory ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Download className="w-3.5 h-3.5" />}
+            Baixar histórico real ({symbol})
+          </Button>
+          {isBotRunning && (
+            <span className="text-[9px] text-amber-400 font-bold">Desliga o bot para usar isto (troca o buffer de candles)</span>
+          )}
+        </div>
+
+        {historyMsg && (
+          <div className={cn("mt-2 p-2 rounded-lg text-[10px] font-bold", historyMsg.startsWith("Erro") ? "bg-red-500/10 text-red-400 border border-red-500/30" : "bg-green-500/10 text-green-400 border border-green-500/30")}>
+            {historyMsg}
+          </div>
+        )}
 
         {error && (
           <div className="mt-3 p-3 bg-amber-500/10 border border-amber-500/30 rounded-lg text-[11px] text-amber-400 font-bold flex items-center gap-2">
