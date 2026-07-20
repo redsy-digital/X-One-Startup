@@ -19,7 +19,8 @@ import { ErrorBoundary } from "../components/ErrorBoundary";
 import { SYMBOLS } from "../constants";
 import { logger, LogEntry } from "../lib/logger";
 import { getTradeHistory } from "../lib/storage";
-import { TradeHistory } from "../types";
+import { TradeHistory, StrategyProfile } from "../types";
+import { STRATEGY_PROFILES } from "../lib/strategy";
 import {
   useConnectionStore, useBotStore, useMarketStore,
   useSettingsStore, useSignalStore
@@ -72,11 +73,20 @@ function useLogEntries(max = 500) {
 const AcertosModal = ({ onClose }: { onClose: () => void }) => {
   const { settings, updateSettings, changeProfile } = useSettingsStore();
   const s = settings;
-  const row = (label: string, key: keyof typeof s, step = "1") => (
+  const row = (label: string, key: keyof typeof s, step = "1", min = 0, max?: number) => (
     <div className="space-y-1" key={label}>
       <label className="text-[9px] text-muted-foreground uppercase font-black">{label}</label>
-      <Input type="number" step={step} value={s[key] as number}
-        onChange={e => updateSettings({ [key]: Number(e.target.value) })}
+      <Input type="number" step={step} min={min} max={max} value={s[key] as number}
+        onChange={e => {
+          const raw = Number(e.target.value);
+          // Campo vazio ou não-numérico: ignora em vez de gravar NaN.
+          // Um NaN aqui (ex.: em stopLoss) faz a comparação de paragem
+          // da sessão nunca ser verdadeira — desliga a proteção em silêncio.
+          if (Number.isNaN(raw)) return;
+          let clamped = Math.max(min, raw);
+          if (max !== undefined) clamped = Math.min(max, clamped);
+          updateSettings({ [key]: clamped });
+        }}
         className="bg-black/30 border-white/10 h-8 text-[11px]" />
     </div>
   );
@@ -100,32 +110,41 @@ const AcertosModal = ({ onClose }: { onClose: () => void }) => {
         <div className="p-5 space-y-4 max-h-[70vh] overflow-y-auto">
           <div className="space-y-1">
             <label className="text-[9px] text-muted-foreground uppercase font-black">Perfil IA</label>
-            <Select value={s.strategyProfile} onValueChange={(v: any) => changeProfile(v)}>
-              <SelectTrigger className="bg-black/30 border-white/10 h-8 text-[11px]"><SelectValue /></SelectTrigger>
-              <SelectContent className="bg-[#111114] border-white/10 text-white z-[500]">
-                <SelectItem value="conservative">Conservador (80%)</SelectItem>
-                <SelectItem value="balanced">Equilibrado (70%)</SelectItem>
-                <SelectItem value="aggressive">Agressivo (55%)</SelectItem>
-              </SelectContent>
-            </Select>
+            <div className="grid grid-cols-3 gap-2">
+              {([
+                ["conservative", "Conservador"],
+                ["balanced", "Equilibrado"],
+                ["aggressive", "Agressivo"],
+              ] as [StrategyProfile, string][]).map(([profile, label]) => {
+                const isActive = s.strategyProfile === profile;
+                return (
+                  <button key={profile} type="button" onClick={() => changeProfile(profile)}
+                    className={cn("rounded-lg border py-2 px-1 text-center transition-colors",
+                      isActive ? "border-purple-500/60 bg-purple-500/15 text-purple-300" : "border-white/10 bg-black/30 text-muted-foreground hover:border-white/20")}>
+                    <p className="text-[10px] font-black leading-tight">{label}</p>
+                    <p className="text-[9px] font-bold mt-0.5">{STRATEGY_PROFILES[profile].minConfidenceOverride}%</p>
+                  </button>
+                );
+              })}
+            </div>
           </div>
           <div className="grid grid-cols-2 gap-3">
-            {row("Stake Base ($)", "stake", "0.01")}
-            {row("Take Profit ($)", "targetProfit", "0.5")}
-            {row("Stop Loss ($)", "stopLoss", "0.5")}
-            {row("Conf. Mínima (%)", "minConfidence")}
+            {row("Stake Base ($)", "stake", "0.01", 0.01)}
+            {row("Take Profit ($)", "targetProfit", "0.5", 0.01)}
+            {row("Stop Loss ($)", "stopLoss", "0.5", 0.01)}
+            {row("Conf. Mínima (%)", "minConfidence", "1", 0, 100)}
           </div>
           <div className="p-3 bg-white/5 rounded-xl border border-white/10 space-y-2">
             {tog("Martingale", "useMartingale")}
-            {s.useMartingale && <div className="grid grid-cols-2 gap-2">{row("Steps", "maxMartingaleSteps")}{row("Multiplicador", "martingaleMultiplier", "0.1")}</div>}
+            {s.useMartingale && <div className="grid grid-cols-2 gap-2">{row("Steps", "maxMartingaleSteps", "1", 0)}{row("Multiplicador", "martingaleMultiplier", "0.1", 0.1)}</div>}
           </div>
           <div className="p-3 bg-white/5 rounded-xl border border-white/10 space-y-2">
             {tog("Soros", "useSoros")}
-            {s.useSoros && row("Níveis Soros", "maxSorosLevels")}
+            {s.useSoros && row("Níveis Soros", "maxSorosLevels", "1", 0)}
           </div>
           <div className="grid grid-cols-2 gap-3">
-            {row("Max Perdas Seg.", "maxConsecutiveLosses")}
-            {row("Cooldown Loss (s)", "cooldownAfterLoss")}
+            {row("Max Perdas Seg.", "maxConsecutiveLosses", "1", 1)}
+            {row("Cooldown Loss (s)", "cooldownAfterLoss", "1", 0)}
           </div>
         </div>
         <div className="px-5 pb-5">
@@ -169,7 +188,7 @@ export const DashboardPage = () => {
   const { symbol, setSymbol, candles, ticks, timeframe, setTimeframe } = useMarketStore();
   const { settings } = useSettingsStore();
   const { lastSignal } = useSignalStore();
-  const { wins, losses, pnl: rawPnl, modal, closeModal } = useSessionStore();
+  const { wins, losses, consecutiveLosses, pnl: rawPnl, modal, closeModal } = useSessionStore();
   const pnl = Number(rawPnl) || 0;
   const logEntries = useLogEntries(60);
   const timer = useSessionTimer(isBotRunning);
@@ -274,7 +293,7 @@ export const DashboardPage = () => {
               {[
                 { label: "Assertividade", value: `${winRate}%`, color: winRate >= 55 ? "text-green-400" : "text-yellow-400" },
                 { label: "WR Operação", value: lastSignal?.type !== "NEUTRAL" && lastSignal?.type ? lastSignal.type : "—", color: lastSignal?.type === "CALL" ? "text-blue-400" : lastSignal?.type === "PUT" ? "text-pink-400" : "text-muted-foreground" },
-                { label: "Conseq. Loss", value: String(losses), color: losses >= 3 ? "text-red-400" : "text-white" },
+                { label: "Conseq. Loss", value: String(consecutiveLosses), color: consecutiveLosses >= 3 ? "text-red-400" : "text-white" },
                 { label: "Stake Actual", value: `$${settings.stake.toFixed(2)}`, color: "text-blue-400" },
                 { label: "Trend Freshness", value: `${ind?.trendFreshnessScore?.toFixed(1) || "—"}/10`, color: (ind?.trendFreshnessScore || 0) >= 6 ? "text-green-400" : "text-amber-400" },
                 { label: "Timing Quality", value: `${ind?.timingQuality?.toFixed(1) || "—"}/10`, color: (ind?.timingQuality || 0) >= 6 ? "text-green-400" : "text-amber-400" },

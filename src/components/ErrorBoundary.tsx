@@ -1,6 +1,7 @@
 import React from "react";
 import { AlertTriangle, RefreshCw } from "lucide-react";
 import { Button } from "./ui/button";
+import { logger } from "../lib/logger";
 
 interface Props {
   children: React.ReactNode;
@@ -25,11 +26,14 @@ export class ErrorBoundary extends React.Component<Props, State> {
   componentDidCatch(error: Error, info: React.ErrorInfo) {
     const msg = `[${this.props.fallbackLabel || "ErrorBoundary"}] ${error.message}`;
     console.error(msg, info.componentStack);
-    // Tenta registar no logger sem criar dependência circular
+    // Antes usava require("../lib/logger") — não existe em ESM/browser,
+    // por isso lançava sempre ReferenceError e caía num catch vazio;
+    // o erro nunca chegava ao painel de Logs. logger.ts não tem nenhuma
+    // dependência (não há risco de ciclo), por isso um import normal
+    // no topo do ficheiro resolve isto sem contornos.
     try {
-      const { logger } = require("../lib/logger");
       logger.error(msg);
-    } catch { /* logger pode não estar disponível no root boundary */ }
+    } catch { /* nunca deve acontecer, mas não deixar o boundary quebrar por causa disto */ }
   }
 
   render() {
