@@ -26,6 +26,7 @@ export class DerivService {
 
   // Epoch: garante que apenas a conexão mais recente processa eventos
   private _epoch = 0;
+  private _debugLogAll = false;
 
   constructor(appId: string = import.meta.env.VITE_DERIV_APP_ID || "1089") {
     this.appId = appId;
@@ -76,6 +77,21 @@ export class DerivService {
     return this.socket?.readyState === WebSocket.OPEN;
   }
 
+  /**
+   * Diagnóstico temporário: regista no Logger o msg_type de TODAS as
+   * mensagens recebidas durante `ms` milissegundos, depois desliga-se
+   * sozinho. Não fica activo para sempre (evitaria encher os Logs
+   * durante uso normal, que já não têm limite de buffer).
+   */
+  debugLogAllMessagesFor(ms: number) {
+    this._debugLogAll = true;
+    logger.system(`[Debug] A registar todas as mensagens recebidas durante ${ms / 1000}s...`);
+    setTimeout(() => {
+      this._debugLogAll = false;
+      logger.system("[Debug] Registo de todas as mensagens terminado.");
+    }, ms);
+  }
+
   on(type: string, callback: (data: any) => void) {
     if (!this.listeners.has(type)) this.listeners.set(type, new Set());
     this.listeners.get(type)!.add(callback);
@@ -92,8 +108,11 @@ export class DerivService {
 
   /**
    * Pede candles históricos via ticks_history (style: "candles").
-   * subscribe:0 → pedido único, não inicia stream (a stream de ticks ao
-   * vivo já é gerida separadamente por subscribeTicks).
+   * Pedido único, sem subscrição (a stream de ticks ao vivo já é gerida
+   * separadamente por subscribeTicks). A New API documenta "subscribe"
+   * como aceitando SÓ o valor 1 ("Only 1 allowed") — por isso, para um
+   * pedido único, o campo é omitido em vez de enviado como 0 (o que a
+   * validação mais rígida da New API pode rejeitar ou ignorar em silêncio).
    * Resposta chega com msg_type "candles" — ouvir via derivService.on("candles", ...).
    */
   requestTicksHistory(symbol: string, count: number, granularitySeconds: number) {
@@ -104,7 +123,6 @@ export class DerivService {
       style: "candles",
       granularity: granularitySeconds,
       adjust_start_time: 1,
-      subscribe: 0,
     });
   }
 
@@ -248,9 +266,13 @@ export class DerivService {
       if (epoch !== this._epoch) return;
       try {
         const data = JSON.parse(event.data) as DerivMessage;
+        if (this._debugLogAll) {
+          logger.system(`[Debug] Recebido: msg_type=${data.msg_type ?? "(nenhum)"} ${data.error ? `| error=${data.error.message}` : ""}`);
+        }
         if (data.msg_type) this._emit(data.msg_type, data);
       } catch (e) {
         console.error("[Deriv] Parse error:", e);
+        if (this._debugLogAll) logger.error(`[Debug] Falha ao interpretar mensagem recebida: ${e}`);
       }
     };
 

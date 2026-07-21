@@ -77,6 +77,8 @@ export function fetchAndDownloadHistoricalDataset(
     return;
   }
 
+  derivService.debugLogAllMessagesFor(20_000);
+
   let settled = false;
   const timeoutId = setTimeout(() => {
     if (settled) return;
