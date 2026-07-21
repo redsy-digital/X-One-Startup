@@ -71,6 +71,11 @@ export class DerivService {
     }
   }
 
+  /** Verifica se o socket está realmente aberto e pronto para enviar pedidos. */
+  isSocketOpen(): boolean {
+    return this.socket?.readyState === WebSocket.OPEN;
+  }
+
   on(type: string, callback: (data: any) => void) {
     if (!this.listeners.has(type)) this.listeners.set(type, new Set());
     this.listeners.get(type)!.add(callback);

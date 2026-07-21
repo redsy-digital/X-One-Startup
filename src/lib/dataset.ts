@@ -58,6 +58,12 @@ export function downloadCandleDataset(candles: Candle[], symbol: string): void {
  * A Deriv pode rejeitar `count` muito grande (não há como confirmar o
  * limite exacto sem uma chamada real) — nesse caso o erro é reportado
  * via onError em vez de descarregar um ficheiro vazio.
+ *
+ * Antes disto: se o WebSocket não estivesse aberto, derivService.send()
+ * falhava em silêncio (só um console.warn) e esta função ficava à espera
+ * de uma resposta que nunca chegava — parecia "girar para sempre" sem
+ * nenhum aviso. Agora verifica a ligação primeiro, e tem um timeout como
+ * rede de segurança para qualquer outro caso em que a resposta não chegue.
  */
 export function fetchAndDownloadHistoricalDataset(
   symbol: string,
@@ -66,7 +72,23 @@ export function fetchAndDownloadHistoricalDataset(
   onError: (message: string) => void,
   onSuccess: (candleCount: number) => void
 ): void {
+  if (!derivService.isSocketOpen()) {
+    onError("Não há ligação activa à Deriv. Liga-te primeiro no Dashboard.");
+    return;
+  }
+
+  let settled = false;
+  const timeoutId = setTimeout(() => {
+    if (settled) return;
+    settled = true;
+    unsubscribe();
+    onError("A Deriv não respondeu a tempo (20s). Tenta novamente.");
+  }, 20_000);
+
   const unsubscribe = derivService.on("candles", (data: any) => {
+    if (settled) return;
+    settled = true;
+    clearTimeout(timeoutId);
     unsubscribe();
     if (data.error) {
       onError(data.error.message || "Erro desconhecido ao pedir histórico à Deriv.");
