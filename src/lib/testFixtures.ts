@@ -52,7 +52,26 @@ export function makeTrendingCandles(
   return candles;
 }
 
-/** Candles "choppy": oscilam em torno de `base`, sem tendência líquida. */
+/**
+ * Candles de "1 tick": open sempre igual a close (como os que a Deriv
+ * devolve para símbolos que tickam mais devagar que o timeframe pedido,
+ * ex. R_100 a 1s — achado real da Fase 3). Ainda assim há uma tendência
+ * real entre candles consecutivos (o preço move-se de candle para candle,
+ * só não DENTRO de cada candle).
+ */
+export function makeSingleTickTrendingCandles(
+  count: number,
+  opts: { start?: number; step?: number; startTime?: number; intervalSec?: number } = {}
+): Candle[] {
+  const { start = 100, step = 0.05, startTime = 1_700_000_000, intervalSec = 60 } = opts;
+  const candles: Candle[] = [];
+  let price = start;
+  for (let i = 0; i < count; i++) {
+    price += step;
+    candles.push({ time: startTime + i * intervalSec, open: price, high: price, low: price, close: price });
+  }
+  return candles;
+}
 export function makeChoppyCandles(
   count: number,
   opts: { base?: number; amplitude?: number; startTime?: number; intervalSec?: number; seed?: number } = {}

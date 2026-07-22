@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { runBacktest, BacktestConfig } from "./backtest";
-import { makeFlatCandles, makeChoppyCandles } from "./testFixtures";
+import { makeFlatCandles, makeChoppyCandles, makeSingleTickTrendingCandles } from "./testFixtures";
 
 const baseConfig: BacktestConfig = {
   stake: 10,
@@ -101,6 +101,24 @@ describe("runBacktest — invariantes estruturais do resultado", () => {
     // decidi não testar aqui, por depender de efeitos de segunda ordem).
     const result = runBacktest(candles, "R_100", { ...baseConfig, cooldownSeconds: 999_999 });
     expect(result.totalTrades).toBeLessThanOrEqual(1);
+  });
+});
+
+describe("runBacktest — achado da Fase 3: candles de 1 tick (open sempre == close)", () => {
+  // Em símbolos que tickam mais devagar que o timeframe pedido (ex. R_100
+  // a 1s), cada candle acaba por ter open===close (um único tick). A
+  // comparação antiga (nextCandle.close > nextCandle.open) nunca podia
+  // ser verdadeira nesse caso — dava sempre 0% de acerto, não porque a
+  // estratégia fosse má, mas porque a métrica em si estava quebrada.
+  it("numa tendência de alta monotónica de candles de 1 tick, regista vitórias (não fica preso em 0%)", () => {
+    const candles = makeSingleTickTrendingCandles(300, { step: 0.3 });
+    const permissive: BacktestConfig = { ...baseConfig, minConfidence: 0, strategyProfile: "balanced" };
+    const result = runBacktest(candles, "R_75", permissive);
+    if (result.totalTrades > 0) {
+      expect(result.wins).toBeGreaterThan(0);
+      // Tendência monotónica de alta: um CALL quase nunca devia perder aqui.
+      expect(result.winRate).toBeGreaterThan(80);
+    }
   });
 });
 

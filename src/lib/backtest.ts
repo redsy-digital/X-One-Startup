@@ -185,11 +185,19 @@ export function runBacktest(
       consecutiveLosses = 0;
     }
 
-    // Determinar resultado: usa a DIRECÇÃO do próximo candle
+    // Determinar resultado: compara o close seguinte contra o close de
+    // ENTRADA (candle do sinal), não contra o open do próprio candle
+    // seguinte. Achado ao analisar dados reais da Fase 3: em candles de
+    // 1 tick (open sempre == close, comuns em timeframes de 1s em
+    // símbolos que não tickam a cada segundo, ex. R_100), a comparação
+    // antiga nunca podia ser verdadeira — dava sempre 0% de acerto,
+    // não porque a estratégia seja má, mas porque a métrica em si nunca
+    // conseguia registar uma vitória.
     const nextCandle = candles[i + 1];
+    const entryClose = candles[i].close;
     const isWin = signal.type === "CALL"
-      ? nextCandle.close > nextCandle.open
-      : nextCandle.close < nextCandle.open;
+      ? nextCandle.close > entryClose
+      : nextCandle.close < entryClose;
 
     recordStructureTrade(structureState, signal.type as "CALL" | "PUT");
     lastActionTime = nowMs;
