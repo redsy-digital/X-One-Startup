@@ -113,7 +113,14 @@ export class DerivService {
    * como aceitando SÓ o valor 1 ("Only 1 allowed") — por isso, para um
    * pedido único, o campo é omitido em vez de enviado como 0 (o que a
    * validação mais rígida da New API pode rejeitar ou ignorar em silêncio).
+   *
+   * IMPORTANTE: a Deriv não aceita granularity < 60 (mínimo 1 minuto)
+   * para style "candles" — para timeframes abaixo disso (ex.: os 1HZ,
+   * timeframe=1), usar requestRawTicksHistory() em vez desta função.
+   *
    * Resposta chega com msg_type "candles" — ouvir via derivService.on("candles", ...).
+   * Em caso de erro (ex.: granularity inválida), a resposta vem com
+   * msg_type "ticks_history" (o nome do campo do pedido) em vez de "candles".
    */
   requestTicksHistory(symbol: string, count: number, granularitySeconds: number) {
     this.send({
@@ -122,6 +129,25 @@ export class DerivService {
       count,
       style: "candles",
       granularity: granularitySeconds,
+      adjust_start_time: 1,
+    });
+  }
+
+  /**
+   * Pede o histórico de TICKS BRUTOS (sem agregação no servidor, sem
+   * restrição de granularidade mínima) — para timeframes abaixo de 60s,
+   * que a Deriv não aceita construir como "candles" directamente.
+   * Resposta de sucesso vem com msg_type "history" e um objecto
+   * { prices: number[], times: number[] } (arrays paralelos).
+   * Em caso de erro, vem com msg_type "ticks_history", tal como no pedido
+   * de candles.
+   */
+  requestRawTicksHistory(symbol: string, count: number) {
+    this.send({
+      ticks_history: symbol,
+      end: "latest",
+      count,
+      style: "ticks",
       adjust_start_time: 1,
     });
   }

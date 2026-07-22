@@ -44,26 +44,50 @@ export function downloadCandleDataset(candles: Candle[], symbol: string): void {
 }
 
 /**
+ * Agrega ticks brutos em candles OHLC — réplica exacta da lógica usada
+ * ao vivo em useMarketStore.addTick (Math.floor(time/timeframe)*timeframe),
+ * aqui aplicada de uma vez sobre um array em vez de tick a tick.
+ */
+function bucketTicksIntoCandles(times: number[], prices: number[], timeframeSeconds: number): Candle[] {
+  const candles: Candle[] = [];
+  for (let i = 0; i < times.length; i++) {
+    const time = Number(times[i]);
+    const price = Number(prices[i]);
+    const bucketTime = Math.floor(time / timeframeSeconds) * timeframeSeconds;
+    const last = candles[candles.length - 1];
+    if (last && last.time === bucketTime) {
+      last.high = Math.max(last.high, price);
+      last.low = Math.min(last.low, price);
+      last.close = price;
+    } else {
+      candles.push({ time: bucketTime, open: price, high: price, low: price, close: price });
+    }
+  }
+  return candles;
+}
+
+/**
  * Pede um lote histórico grande directamente da Deriv (via WebSocket já
  * ligado) e descarrega-o como dataset assim que chegar.
  *
- * IMPORTANTE — partilha o mesmo canal de eventos "candles" que a app usa
- * para carregar o histórico normal (App.tsx). Isto significa que, ao
- * chamar isto, o buffer normal de candles (useMarketStore) TAMBÉM vai
- * ser substituído temporariamente por este lote maior — inofensivo com
- * o bot parado, mas por isso é que o botão que chama isto só deve ficar
- * activo com o bot desligado. Depois de exportar, troca de símbolo ou
- * volta a ligar para o gráfico voltar ao normal.
+ * IMPORTANTE — partilha canais de eventos com o resto da app (App.tsx
+ * ouve "candles" para o histórico normal). Isto significa que, ao chamar
+ * isto, o buffer normal de candles (useMarketStore) TAMBÉM pode ser
+ * substituído temporariamente por este lote maior — inofensivo com o bot
+ * parado, mas por isso é que o botão que chama isto só deve ficar activo
+ * com o bot desligado. Depois de exportar, troca de símbolo ou volta a
+ * ligar para o gráfico voltar ao normal.
  *
- * A Deriv pode rejeitar `count` muito grande (não há como confirmar o
- * limite exacto sem uma chamada real) — nesse caso o erro é reportado
- * via onError em vez de descarregar um ficheiro vazio.
+ * A Deriv não aceita granularity < 60s para style "candles" (confirmado:
+ * "Input validation failed: granularity"). Para granularitySeconds < 60
+ * (ex.: timeframes de 1s dos símbolos 1HZ), pede-se ticks brutos
+ * (style: "ticks", sem limite de granularidade) e constrói-se os candles
+ * no cliente com a mesma lógica usada ao vivo — para os dois lados
+ * (histórico e ao vivo) ficarem consistentes.
  *
- * Antes disto: se o WebSocket não estivesse aberto, derivService.send()
- * falhava em silêncio (só um console.warn) e esta função ficava à espera
- * de uma resposta que nunca chegava — parecia "girar para sempre" sem
- * nenhum aviso. Agora verifica a ligação primeiro, e tem um timeout como
- * rede de segurança para qualquer outro caso em que a resposta não chegue.
+ * Erros vêm sempre com msg_type "ticks_history" (o nome do campo do
+ * pedido), independentemente do style pedido — confirmado para "candles";
+ * assumido por analogia para "ticks" (mesma chave de pedido).
  */
 export function fetchAndDownloadHistoricalDataset(
   symbol: string,
@@ -79,36 +103,64 @@ export function fetchAndDownloadHistoricalDataset(
 
   derivService.debugLogAllMessagesFor(20_000);
 
+  const useRawTicks = granularitySeconds < 60;
   let settled = false;
-  const timeoutId = setTimeout(() => {
-    if (settled) return;
-    settled = true;
-    unsubscribe();
-    onError("A Deriv não respondeu a tempo (20s). Tenta novamente.");
-  }, 20_000);
 
-  const unsubscribe = derivService.on("candles", (data: any) => {
+  const finish = (fn: () => void) => {
     if (settled) return;
     settled = true;
     clearTimeout(timeoutId);
-    unsubscribe();
+    unsubError();
+    unsubSuccess();
+    fn();
+  };
+
+  const timeoutId = setTimeout(() => {
+    finish(() => onError("A Deriv não respondeu a tempo (20s). Tenta novamente."));
+  }, 20_000);
+
+  const unsubError = derivService.on("ticks_history", (data: any) => {
     if (data.error) {
-      onError(data.error.message || "Erro desconhecido ao pedir histórico à Deriv.");
-      return;
+      finish(() => onError(data.error.message || "Erro desconhecido ao pedir histórico à Deriv."));
     }
-    if (!data.candles?.length) {
-      onError("A Deriv devolveu 0 candles para este pedido.");
-      return;
-    }
-    const candles: Candle[] = data.candles.map((c: any) => ({
-      time: Number(c.epoch),
-      open: Number(c.open),
-      high: Number(c.high),
-      low: Number(c.low),
-      close: Number(c.close),
-    }));
-    downloadCandleDataset(candles, symbol);
-    onSuccess(candles.length);
   });
-  derivService.requestTicksHistory(symbol, count, granularitySeconds);
+
+  const unsubSuccess = derivService.on(useRawTicks ? "history" : "candles", (data: any) => {
+    if (data.error) {
+      finish(() => onError(data.error.message || "Erro desconhecido ao pedir histórico à Deriv."));
+      return;
+    }
+    let candles: Candle[];
+    if (useRawTicks) {
+      const times: number[] = data.history?.times ?? [];
+      const prices: number[] = data.history?.prices ?? [];
+      if (!times.length) {
+        finish(() => onError("A Deriv devolveu 0 ticks para este pedido."));
+        return;
+      }
+      candles = bucketTicksIntoCandles(times, prices, granularitySeconds);
+    } else {
+      if (!data.candles?.length) {
+        finish(() => onError("A Deriv devolveu 0 candles para este pedido."));
+        return;
+      }
+      candles = data.candles.map((c: any) => ({
+        time: Number(c.epoch),
+        open: Number(c.open),
+        high: Number(c.high),
+        low: Number(c.low),
+        close: Number(c.close),
+      }));
+    }
+    finish(() => {
+      downloadCandleDataset(candles, symbol);
+      onSuccess(candles.length);
+    });
+  });
+
+  if (useRawTicks) {
+    derivService.requestRawTicksHistory(symbol, count);
+  } else {
+    derivService.requestTicksHistory(symbol, count, granularitySeconds);
+  }
 }
