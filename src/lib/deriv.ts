@@ -122,10 +122,10 @@ export class DerivService {
    * Em caso de erro (ex.: granularity inválida), a resposta vem com
    * msg_type "ticks_history" (o nome do campo do pedido) em vez de "candles".
    */
-  requestTicksHistory(symbol: string, count: number, granularitySeconds: number) {
+  requestTicksHistory(symbol: string, count: number, granularitySeconds: number, end: number | "latest" = "latest") {
     this.send({
       ticks_history: symbol,
-      end: "latest",
+      end,
       count,
       style: "candles",
       granularity: granularitySeconds,
@@ -142,10 +142,10 @@ export class DerivService {
    * Em caso de erro, vem com msg_type "ticks_history", tal como no pedido
    * de candles.
    */
-  requestRawTicksHistory(symbol: string, count: number) {
+  requestRawTicksHistory(symbol: string, count: number, end: number | "latest" = "latest") {
     this.send({
       ticks_history: symbol,
-      end: "latest",
+      end,
       count,
       style: "ticks",
       adjust_start_time: 1,

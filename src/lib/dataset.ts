@@ -66,101 +66,163 @@ function bucketTicksIntoCandles(times: number[], prices: number[], timeframeSeco
   return candles;
 }
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+type PageResult =
+  | { times: number[]; prices: number[] }
+  | { candles: Candle[] }
+  | { error: string };
+
+/** Busca UMA página de histórico (ticks ou candles, consoante o estilo). */
+function fetchOnePage(
+  symbol: string,
+  useRawTicks: boolean,
+  granularitySeconds: number,
+  count: number,
+  endTime: number | "latest"
+): Promise<PageResult> {
+  return new Promise((resolve) => {
+    if (!derivService.isSocketOpen()) {
+      resolve({ error: "Não há ligação activa à Deriv. Liga-te primeiro no Dashboard." });
+      return;
+    }
+    derivService.debugLogAllMessagesFor(20_000);
+
+    let settled = false;
+    const finish = (result: PageResult) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeoutId);
+      unsubError();
+      unsubSuccess();
+      resolve(result);
+    };
+
+    const timeoutId = setTimeout(() => finish({ error: "A Deriv não respondeu a tempo (20s)." }), 20_000);
+
+    const unsubError = derivService.on("ticks_history", (data: any) => {
+      if (data.error) finish({ error: data.error.message || "Erro desconhecido ao pedir histórico à Deriv." });
+    });
+
+    const unsubSuccess = derivService.on(useRawTicks ? "history" : "candles", (data: any) => {
+      if (data.error) {
+        finish({ error: data.error.message || "Erro desconhecido ao pedir histórico à Deriv." });
+        return;
+      }
+      if (useRawTicks) {
+        const times = (data.history?.times ?? []).map(Number);
+        const prices = (data.history?.prices ?? []).map(Number);
+        finish({ times, prices });
+      } else {
+        const candles: Candle[] = (data.candles ?? []).map((c: any) => ({
+          time: Number(c.epoch),
+          open: Number(c.open),
+          high: Number(c.high),
+          low: Number(c.low),
+          close: Number(c.close),
+        }));
+        finish({ candles });
+      }
+    });
+
+    if (useRawTicks) {
+      derivService.requestRawTicksHistory(symbol, count, endTime);
+    } else {
+      derivService.requestTicksHistory(symbol, count, granularitySeconds, endTime);
+    }
+  });
+}
+
+/** Tamanho de página confirmado empiricamente como o máximo aceite pela Deriv por pedido. */
+const PAGE_SIZE = 1000;
+/** Tecto de segurança — não é "ilimitado" (evita um loop descontrolado e é
+ *  mais simpático com limites de taxa da Deriv), mas dá até ~50 mil pontos. */
+const MAX_PAGES = 50;
+const DELAY_BETWEEN_PAGES_MS = 400;
+
 /**
- * Pede um lote histórico grande directamente da Deriv (via WebSocket já
- * ligado) e descarrega-o como dataset assim que chegar.
+ * Pede um lote histórico grande directamente da Deriv, paginando
+ * automaticamente sempre que o total pedido excede o máximo por pedido
+ * (1000, confirmado na prática — pedir mais devolve só 1000). Cada página
+ * busca o troço imediatamente anterior ao mais antigo já obtido, até
+ * atingir o total pedido, esgotar o histórico disponível, ou chegar ao
+ * tecto de segurança (50 páginas).
  *
  * IMPORTANTE — partilha canais de eventos com o resto da app (App.tsx
- * ouve "candles" para o histórico normal). Isto significa que, ao chamar
- * isto, o buffer normal de candles (useMarketStore) TAMBÉM pode ser
- * substituído temporariamente por este lote maior — inofensivo com o bot
- * parado, mas por isso é que o botão que chama isto só deve ficar activo
- * com o bot desligado. Depois de exportar, troca de símbolo ou volta a
- * ligar para o gráfico voltar ao normal.
+ * ouve "candles" para o histórico normal). O buffer normal de candles
+ * (useMarketStore) pode ser substituído temporariamente durante isto —
+ * inofensivo com o bot parado, por isso o botão que chama isto só deve
+ * ficar activo com o bot desligado.
  *
  * A Deriv não aceita granularity < 60s para style "candles" (confirmado:
  * "Input validation failed: granularity"). Para granularitySeconds < 60
- * (ex.: timeframes de 1s dos símbolos 1HZ), pede-se ticks brutos
- * (style: "ticks", sem limite de granularidade) e constrói-se os candles
- * no cliente com a mesma lógica usada ao vivo — para os dois lados
- * (histórico e ao vivo) ficarem consistentes.
- *
- * Erros vêm sempre com msg_type "ticks_history" (o nome do campo do
- * pedido), independentemente do style pedido — confirmado para "candles";
- * assumido por analogia para "ticks" (mesma chave de pedido).
+ * pede-se ticks brutos (style: "ticks") e constrói-se os candles no
+ * cliente com a mesma lógica usada ao vivo (useMarketStore.addTick).
  */
-export function fetchAndDownloadHistoricalDataset(
+export async function fetchAndDownloadHistoricalDataset(
   symbol: string,
   granularitySeconds: number,
-  count: number,
+  desiredCount: number,
   onError: (message: string) => void,
-  onSuccess: (candleCount: number) => void
-): void {
+  onSuccess: (candleCount: number) => void,
+  onProgress?: (fetchedCount: number, page: number) => void
+): Promise<void> {
   if (!derivService.isSocketOpen()) {
     onError("Não há ligação activa à Deriv. Liga-te primeiro no Dashboard.");
     return;
   }
 
-  derivService.debugLogAllMessagesFor(20_000);
-
   const useRawTicks = granularitySeconds < 60;
-  let settled = false;
+  let allTimes: number[] = [];
+  let allPrices: number[] = [];
+  let allCandles: Candle[] = [];
+  let endTime: number | "latest" = "latest";
+  let page = 0;
 
-  const finish = (fn: () => void) => {
-    if (settled) return;
-    settled = true;
-    clearTimeout(timeoutId);
-    unsubError();
-    unsubSuccess();
-    fn();
-  };
+  while (page < MAX_PAGES) {
+    page++;
+    const already = useRawTicks ? allTimes.length : allCandles.length;
+    const remaining = desiredCount - already;
+    if (remaining <= 0) break;
+    const pageCount = Math.min(PAGE_SIZE, remaining);
 
-  const timeoutId = setTimeout(() => {
-    finish(() => onError("A Deriv não respondeu a tempo (20s). Tenta novamente."));
-  }, 20_000);
+    const result = await fetchOnePage(symbol, useRawTicks, granularitySeconds, pageCount, endTime);
 
-  const unsubError = derivService.on("ticks_history", (data: any) => {
-    if (data.error) {
-      finish(() => onError(data.error.message || "Erro desconhecido ao pedir histórico à Deriv."));
-    }
-  });
-
-  const unsubSuccess = derivService.on(useRawTicks ? "history" : "candles", (data: any) => {
-    if (data.error) {
-      finish(() => onError(data.error.message || "Erro desconhecido ao pedir histórico à Deriv."));
+    if ("error" in result) {
+      // Se já há dados de páginas anteriores, é melhor exportar o que já
+      // temos do que perder tudo por a última página ter falhado.
+      if (already > 0) break;
+      onError(result.error);
       return;
     }
-    let candles: Candle[];
-    if (useRawTicks) {
-      const times: number[] = data.history?.times ?? [];
-      const prices: number[] = data.history?.prices ?? [];
-      if (!times.length) {
-        finish(() => onError("A Deriv devolveu 0 ticks para este pedido."));
-        return;
-      }
-      candles = bucketTicksIntoCandles(times, prices, granularitySeconds);
-    } else {
-      if (!data.candles?.length) {
-        finish(() => onError("A Deriv devolveu 0 candles para este pedido."));
-        return;
-      }
-      candles = data.candles.map((c: any) => ({
-        time: Number(c.epoch),
-        open: Number(c.open),
-        high: Number(c.high),
-        low: Number(c.low),
-        close: Number(c.close),
-      }));
-    }
-    finish(() => {
-      downloadCandleDataset(candles, symbol);
-      onSuccess(candles.length);
-    });
-  });
 
-  if (useRawTicks) {
-    derivService.requestRawTicksHistory(symbol, count);
-  } else {
-    derivService.requestTicksHistory(symbol, count, granularitySeconds);
+    if (useRawTicks && "times" in result) {
+      if (result.times.length === 0) break; // sem mais histórico disponível
+      // times/prices vêm cronológicos (mais antigo → mais recente); a
+      // próxima página (mais antiga ainda) entra ANTES desta no array final.
+      allTimes = [...result.times, ...allTimes];
+      allPrices = [...result.prices, ...allPrices];
+      endTime = result.times[0] - 1;
+      onProgress?.(allTimes.length, page);
+      if (result.times.length < pageCount) break; // Deriv devolveu menos do pedido = fim do histórico
+    } else if (!useRawTicks && "candles" in result) {
+      if (result.candles.length === 0) break;
+      allCandles = [...result.candles, ...allCandles];
+      endTime = result.candles[0].time - granularitySeconds;
+      onProgress?.(allCandles.length, page);
+      if (result.candles.length < pageCount) break;
+    }
+
+    if (page < MAX_PAGES) await sleep(DELAY_BETWEEN_PAGES_MS);
   }
+
+  const finalCandles = useRawTicks ? bucketTicksIntoCandles(allTimes, allPrices, granularitySeconds) : allCandles;
+  if (finalCandles.length === 0) {
+    onError("Não foi possível obter nenhum dado histórico.");
+    return;
+  }
+  downloadCandleDataset(finalCandles, symbol);
+  onSuccess(finalCandles.length);
 }

@@ -62,7 +62,8 @@ export const BacktestPanel = () => {
       timeframe,
       historyCount,
       (msg) => { setFetchingHistory(false); setHistoryMsg(`Erro: ${msg}`); },
-      (count) => { setFetchingHistory(false); setHistoryMsg(`${count} candles reais exportados.`); }
+      (count) => { setFetchingHistory(false); setHistoryMsg(`${count} candles reais exportados.`); },
+      (fetched, page) => { setHistoryMsg(`A obter... página ${page} (${fetched}/${historyCount})`); }
     );
   }, [symbol, timeframe, historyCount]);
 
@@ -156,7 +157,7 @@ export const BacktestPanel = () => {
         {/* Fase 3.0: puxar lote histórico grande directamente da Deriv */}
         <div className="mt-3 pt-3 border-t border-white/10 flex items-center gap-2 flex-wrap">
           <input
-            type="number" min={1} max={20000} step={100} value={historyCount}
+            type="number" min={1} max={50000} step={500} value={historyCount}
             onChange={(e) => setHistoryCount(Math.max(1, Number(e.target.value) || 1))}
             className="w-24 h-8 rounded-lg bg-black/30 border border-white/10 text-[11px] px-2 text-white"
           />
@@ -173,6 +174,9 @@ export const BacktestPanel = () => {
           {isBotRunning && (
             <span className="text-[9px] text-amber-400 font-bold">Desliga o bot para usar isto (troca o buffer de candles)</span>
           )}
+          <span className="text-[9px] text-muted-foreground basis-full">
+            A Deriv limita 1000 por pedido — acima disso pagina automaticamente (até 50 páginas / ~50 mil).
+          </span>
         </div>
 
         {historyMsg && (
