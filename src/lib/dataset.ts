@@ -183,17 +183,25 @@ export async function fetchAndDownloadHistoricalDataset(
 
   while (page < MAX_PAGES) {
     page++;
-    const already = useRawTicks ? allTimes.length : allCandles.length;
-    const remaining = desiredCount - already;
-    if (remaining <= 0) break;
-    const pageCount = Math.min(PAGE_SIZE, remaining);
+    // IMPORTANTE: quando useRawTicks, "quantos já temos" tem de ser medido
+    // em CANDLES depois de agregados, não em ticks brutos — vários ticks
+    // podem cair no mesmo candle (ex.: timeframe 3s/5s com ticks a cada
+    // ~1-2s). Comparar contagem de ticks com o total pedido em candles só
+    // dava certo por coincidência a 1s (onde tende a ser 1 tick por candle).
+    const alreadyCandles = useRawTicks
+      ? bucketTicksIntoCandles(allTimes, allPrices, granularitySeconds).length
+      : allCandles.length;
+    if (alreadyCandles >= desiredCount) break;
+    // Pede sempre o máximo por página — não há como prever de antemão
+    // quantos ticks brutos fazem falta para preencher N candles.
+    const pageCount = PAGE_SIZE;
 
     const result = await fetchOnePage(symbol, useRawTicks, granularitySeconds, pageCount, endTime);
 
     if ("error" in result) {
       // Se já há dados de páginas anteriores, é melhor exportar o que já
       // temos do que perder tudo por a última página ter falhado.
-      if (already > 0) break;
+      if (alreadyCandles > 0) break;
       onError(result.error);
       return;
     }
@@ -205,7 +213,8 @@ export async function fetchAndDownloadHistoricalDataset(
       allTimes = [...result.times, ...allTimes];
       allPrices = [...result.prices, ...allPrices];
       endTime = result.times[0] - 1;
-      onProgress?.(allTimes.length, page);
+      const nowCandles = bucketTicksIntoCandles(allTimes, allPrices, granularitySeconds).length;
+      onProgress?.(nowCandles, page);
       if (result.times.length < pageCount) break; // Deriv devolveu menos do pedido = fim do histórico
     } else if (!useRawTicks && "candles" in result) {
       if (result.candles.length === 0) break;
@@ -218,11 +227,17 @@ export async function fetchAndDownloadHistoricalDataset(
     if (page < MAX_PAGES) await sleep(DELAY_BETWEEN_PAGES_MS);
   }
 
-  const finalCandles = useRawTicks ? bucketTicksIntoCandles(allTimes, allPrices, granularitySeconds) : allCandles;
-  if (finalCandles.length === 0) {
+  const rawFinalCandles = useRawTicks ? bucketTicksIntoCandles(allTimes, allPrices, granularitySeconds) : allCandles;
+  if (rawFinalCandles.length === 0) {
     onError("Não foi possível obter nenhum dado histórico.");
     return;
   }
+  // Como cada página pede sempre o máximo (1000 ticks), pode sobrar um
+  // pouco a mais que o pedido depois de agregar — aparar para o total
+  // exacto pedido, mantendo os mais recentes.
+  const finalCandles = rawFinalCandles.length > desiredCount
+    ? rawFinalCandles.slice(rawFinalCandles.length - desiredCount)
+    : rawFinalCandles;
   downloadCandleDataset(finalCandles, symbol);
   onSuccess(finalCandles.length);
 }
