@@ -10,6 +10,8 @@ import { downloadCandleDataset, fetchAndDownloadHistoricalDataset } from "../lib
 import { useSettingsStore } from "../store/useSettingsStore";
 import { useMarketStore } from "../store/useMarketStore";
 import { useBotStore } from "../store/useBotStore";
+import { SYMBOLS } from "../constants";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "./ui/select";
 
 const PAYOUT_RATE = 0.92; // 92% — valor típico Deriv para opções de 5 ticks
 const INITIAL_BALANCE = 1000;
@@ -53,19 +55,24 @@ export const BacktestPanel = () => {
   const [historyCount, setHistoryCount] = useState(5000);
   const [fetchingHistory, setFetchingHistory] = useState(false);
   const [historyMsg, setHistoryMsg] = useState<string | null>(null);
+  // Símbolo/timeframe SÓ para o dataset — independentes do Dashboard, para
+  // não teres de trocar de página a cada exportação. Começam iguais ao
+  // que já está ligado, mas podes mudar aqui sem afectar o gráfico ao vivo.
+  const [datasetSymbol, setDatasetSymbol] = useState(symbol);
+  const [datasetTimeframe, setDatasetTimeframe] = useState(timeframe);
 
   const handleFetchLargeHistory = useCallback(() => {
     setFetchingHistory(true);
     setHistoryMsg(null);
     fetchAndDownloadHistoricalDataset(
-      symbol,
-      timeframe,
+      datasetSymbol,
+      datasetTimeframe,
       historyCount,
       (msg) => { setFetchingHistory(false); setHistoryMsg(`Erro: ${msg}`); },
       (count) => { setFetchingHistory(false); setHistoryMsg(`${count} candles reais exportados.`); },
       (fetched, page) => { setHistoryMsg(`A obter... página ${page} (${fetched}/${historyCount})`); }
     );
-  }, [symbol, timeframe, historyCount]);
+  }, [datasetSymbol, datasetTimeframe, historyCount]);
 
   const handleRun = useCallback(async () => {
     if (candles.length < 51) {
@@ -156,6 +163,20 @@ export const BacktestPanel = () => {
 
         {/* Fase 3.0: puxar lote histórico grande directamente da Deriv */}
         <div className="mt-3 pt-3 border-t border-white/10 flex items-center gap-2 flex-wrap">
+          <Select value={datasetSymbol} onValueChange={setDatasetSymbol}>
+            <SelectTrigger className="bg-black/30 border-white/10 h-8 text-[11px] w-32"><SelectValue /></SelectTrigger>
+            <SelectContent className="bg-[#111114] border-white/10 text-white">
+              {SYMBOLS.map(s => <SelectItem key={s.value} value={s.value}>{s.value}</SelectItem>)}
+            </SelectContent>
+          </Select>
+          <Select value={String(datasetTimeframe)} onValueChange={v => setDatasetTimeframe(Number(v))}>
+            <SelectTrigger className="bg-black/30 border-white/10 h-8 text-[11px] w-16"><SelectValue /></SelectTrigger>
+            <SelectContent className="bg-[#111114] border-white/10 text-white">
+              <SelectItem value="1">1s</SelectItem>
+              <SelectItem value="3">3s</SelectItem>
+              <SelectItem value="5">5s</SelectItem>
+            </SelectContent>
+          </Select>
           <input
             type="number" min={1} max={50000} step={500} value={historyCount}
             onChange={(e) => setHistoryCount(Math.max(1, Number(e.target.value) || 1))}
@@ -169,7 +190,7 @@ export const BacktestPanel = () => {
             className="font-black uppercase text-[10px] gap-2 h-8"
           >
             {fetchingHistory ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Download className="w-3.5 h-3.5" />}
-            Baixar histórico real ({symbol})
+            Baixar histórico real ({datasetSymbol})
           </Button>
           {isBotRunning && (
             <span className="text-[9px] text-amber-400 font-bold">Desliga o bot para usar isto (troca o buffer de candles)</span>
