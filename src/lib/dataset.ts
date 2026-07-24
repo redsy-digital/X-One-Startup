@@ -138,8 +138,12 @@ function fetchOnePage(
 /** Tamanho de página confirmado empiricamente como o máximo aceite pela Deriv por pedido. */
 const PAGE_SIZE = 1000;
 /** Tecto de segurança — não é "ilimitado" (evita um loop descontrolado e é
- *  mais simpático com limites de taxa da Deriv), mas dá até ~50 mil pontos. */
-const MAX_PAGES = 50;
+ *  mais simpático com limites de taxa da Deriv), mas dá até ~200 mil pontos.
+ *  Em timeframes de 3s/5s, cada candle pode precisar de vários ticks
+ *  brutos, por isso pedidos grandes (15-20 mil candles) podem já
+ *  aproximar-se deste tecto — nesse caso o dataset fica um pouco mais
+ *  curto do que o pedido, mas nunca corre indefinidamente. */
+const MAX_PAGES = 200;
 const DELAY_BETWEEN_PAGES_MS = 400;
 
 /**

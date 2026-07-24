@@ -64,14 +64,18 @@ export const STRATEGY_PROFILES: Record<StrategyProfile, StrategyProfileConfig> =
 export const analyzeMarket = (
   candles: Candle[],
   symbol: string = "R_100",
-  profile: StrategyProfile = "balanced"
+  profile: StrategyProfile = "balanced",
+  configOverride?: Partial<StrategyProfileConfig>
 ): TradeSignal => {
 
   if (candles.length < 50) {
     return makeNeutral("Aguardando dados", "CHOPPY");
   }
 
-  const cfg = STRATEGY_PROFILES[profile];
+  // Fase 3, etapa 3.3 — permite sobrepor campos específicos da config do
+  // perfil para efeitos de teste/varredura de parâmetros, sem tocar em
+  // STRATEGY_PROFILES nem afectar o motor ao vivo (que nunca passa isto).
+  const cfg = configOverride ? { ...STRATEGY_PROFILES[profile], ...configOverride } : STRATEGY_PROFILES[profile];
   const closes = candles.map(c => c.close);
   const lastCandle = candles[candles.length - 1];
   const prevCandle = candles[candles.length - 2];

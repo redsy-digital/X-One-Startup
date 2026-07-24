@@ -1,5 +1,5 @@
 import { Candle } from "../types";
-import { StrategyProfile } from "../types";
+import { StrategyProfile, StrategyProfileConfig } from "../types";
 import { analyzeMarket } from "./strategy";
 import {
   createStructureState,
@@ -24,6 +24,10 @@ export interface BacktestConfig {
   maxConsecutiveLosses: number;
   strategyProfile: StrategyProfile;
   payoutRate: number; // 0.0–1.0 (ex: 0.92 = 92%)
+  /** Fase 3.3 — sobrepõe campos da config do perfil (ex.: minWinScore,
+   *  dominanceMultiplier) só para este backtest, para a varredura de
+   *  parâmetros. Nunca usado pelo motor ao vivo. */
+  strategyConfigOverride?: Partial<StrategyProfileConfig>;
 }
 
 export interface BacktestTrade {
@@ -96,7 +100,7 @@ export function runBacktest(
     cooldownSeconds, cooldownAfterLoss,
     useMartingale, martingaleMultiplier, maxMartingaleSteps,
     useSoros, maxSorosLevels,
-    maxConsecutiveLosses, strategyProfile, payoutRate,
+    maxConsecutiveLosses, strategyProfile, payoutRate, strategyConfigOverride,
   } = config;
 
   // Estado da simulação
@@ -151,7 +155,7 @@ export function runBacktest(
     const slice = candles.slice(0, i + 1);
     const nowMs = candles[i].time * 1000; // proxy do Date.now() ao vivo, usando o tempo real do candle
 
-    const signal = analyzeMarket(slice, symbol, strategyProfile);
+    const signal = analyzeMarket(slice, symbol, strategyProfile, strategyConfigOverride);
 
     // evaluateStructure corre em TODOS os candles, tal como ao vivo
     // (antes de qualquer verificação de NEUTRAL/filtros).

@@ -178,7 +178,7 @@ export const BacktestPanel = () => {
             </SelectContent>
           </Select>
           <input
-            type="number" min={1} max={50000} step={500} value={historyCount}
+            type="number" min={1} max={100000} step={500} value={historyCount}
             onChange={(e) => setHistoryCount(Math.max(1, Number(e.target.value) || 1))}
             className="w-24 h-8 rounded-lg bg-black/30 border border-white/10 text-[11px] px-2 text-white"
           />
@@ -196,7 +196,7 @@ export const BacktestPanel = () => {
             <span className="text-[9px] text-amber-400 font-bold">Desliga o bot para usar isto (troca o buffer de candles)</span>
           )}
           <span className="text-[9px] text-muted-foreground basis-full">
-            A Deriv limita 1000 por pedido — acima disso pagina automaticamente (até 50 páginas / ~50 mil).
+            A Deriv limita 1000 por pedido — acima disso pagina automaticamente (até 200 páginas / ~200 mil, menos em timeframes maiores).
           </span>
         </div>
 
