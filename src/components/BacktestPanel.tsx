@@ -1,12 +1,12 @@
-import React, { useState, useCallback } from "react";
-import { BarChart3, Play, TrendingUp, TrendingDown, AlertTriangle, CheckCircle, XCircle, Loader2, Download } from "lucide-react";
+import React, { useState, useCallback, useRef } from "react";
+import { BarChart3, Play, TrendingUp, TrendingDown, AlertTriangle, CheckCircle, XCircle, Loader2, Download, Upload, X } from "lucide-react";
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, ReferenceLine } from "recharts";
 import { cn } from "../lib/utils";
 import { NeonCard } from "./NeonCard";
 import { Button } from "./ui/button";
 import { Badge } from "./ui/badge";
 import { runBacktest, BacktestResult } from "../lib/backtest";
-import { downloadCandleDataset, fetchAndDownloadHistoricalDataset } from "../lib/dataset";
+import { downloadCandleDataset, fetchAndDownloadHistoricalDataset, CandleDataset } from "../lib/dataset";
 import { useSettingsStore } from "../store/useSettingsStore";
 import { useMarketStore } from "../store/useMarketStore";
 import { useBotStore } from "../store/useBotStore";
@@ -61,6 +61,60 @@ export const BacktestPanel = () => {
   const [datasetSymbol, setDatasetSymbol] = useState(symbol);
   const [datasetTimeframe, setDatasetTimeframe] = useState(timeframe);
 
+  // Dataset importado de um ficheiro .json (exportado antes, pela própria
+  // app ou por "Baixar histórico real"). Quando presente, substitui por
+  // completo os candles ao vivo — que ficam limitados a 1000
+  // (MAX_CANDLES em useMarketStore) — como fonte do backtest, permitindo
+  // testar contra lotes bem maiores.
+  const [importedDataset, setImportedDataset] = useState<CandleDataset | null>(null);
+  const [importError, setImportError] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const effectiveCandles = importedDataset ? importedDataset.candles : candles;
+  const effectiveSymbol = importedDataset ? importedDataset.symbol : symbol;
+
+  const handleFileSelect = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = ""; // permite re-selecionar o mesmo ficheiro depois de um erro
+    if (!file) return;
+
+    setImportError(null);
+    const reader = new FileReader();
+    reader.onerror = () => setImportError("Não foi possível ler o ficheiro.");
+    reader.onload = () => {
+      try {
+        const parsed = JSON.parse(String(reader.result));
+        const candlesArr = parsed?.candles;
+        if (!Array.isArray(candlesArr) || candlesArr.length === 0) {
+          throw new Error('Formato inválido: esperado um dataset exportado pela app (precisa de um array "candles").');
+        }
+        const isValidCandle = (c: any) =>
+          c && typeof c.time === "number" && typeof c.open === "number" &&
+          typeof c.high === "number" && typeof c.low === "number" && typeof c.close === "number";
+        if (!candlesArr.every(isValidCandle)) {
+          throw new Error("O ficheiro tem candles com campos em falta ou inválidos.");
+        }
+        setImportedDataset({
+          symbol: typeof parsed.symbol === "string" ? parsed.symbol : "desconhecido",
+          exportedAt: typeof parsed.exportedAt === "string" ? parsed.exportedAt : "",
+          candleCount: candlesArr.length,
+          candles: candlesArr,
+        });
+        setResult(null);
+      } catch (err: any) {
+        setImportedDataset(null);
+        setImportError(err.message || "Ficheiro inválido.");
+      }
+    };
+    reader.readAsText(file);
+  }, []);
+
+  const handleClearImport = useCallback(() => {
+    setImportedDataset(null);
+    setImportError(null);
+    setResult(null);
+  }, []);
+
   const handleFetchLargeHistory = useCallback(() => {
     setFetchingHistory(true);
     setHistoryMsg(null);
@@ -75,8 +129,11 @@ export const BacktestPanel = () => {
   }, [datasetSymbol, datasetTimeframe, historyCount]);
 
   const handleRun = useCallback(async () => {
-    if (candles.length < 51) {
-      setError(`Candles insuficientes: ${candles.length}/51 mínimos. Aguarda mais dados ao vivo.`);
+    if (effectiveCandles.length < 51) {
+      setError(
+        `Candles insuficientes: ${effectiveCandles.length}/51 mínimos. ` +
+        (importedDataset ? "Carrega um dataset maior." : "Aguarda mais dados ao vivo.")
+      );
       return;
     }
     setRunning(true);
@@ -87,7 +144,7 @@ export const BacktestPanel = () => {
     await new Promise(r => setTimeout(r, 50));
 
     try {
-      const res = runBacktest(candles, symbol, {
+      const res = runBacktest(effectiveCandles, effectiveSymbol, {
         stake: settings.stake,
         stopLoss: settings.stopLoss,
         targetProfit: settings.targetProfit,
@@ -109,7 +166,7 @@ export const BacktestPanel = () => {
     } finally {
       setRunning(false);
     }
-  }, [candles, symbol, settings]);
+  }, [effectiveCandles, effectiveSymbol, importedDataset, settings]);
 
   const handleExportDataset = useCallback(() => {
     downloadCandleDataset(candles, symbol);
@@ -132,7 +189,8 @@ export const BacktestPanel = () => {
               <BarChart3 className="w-4 h-4 text-purple-400" /> Backtest Robusto
             </p>
             <p className="text-[10px] text-muted-foreground mt-1">
-              Simula {candles.length} candles com os teus settings actuais
+              Simula {effectiveCandles.length} candles com os teus settings actuais
+              {importedDataset && ` · dataset importado (${effectiveSymbol})`}
               {settings.useMartingale && ` · Martingale ${settings.martingaleMultiplier}x`}
               {settings.useSoros && ` · Soros ${settings.maxSorosLevels}L`}
             </p>
@@ -143,7 +201,7 @@ export const BacktestPanel = () => {
           <div className="flex flex-col gap-2 shrink-0">
             <Button
               onClick={handleRun}
-              disabled={running || candles.length < 51}
+              disabled={running || effectiveCandles.length < 51}
               className="bg-purple-600 hover:bg-purple-700 font-black uppercase text-[11px] gap-2 h-9"
             >
               {running ? <Loader2 className="w-4 h-4 animate-spin" /> : <Play className="w-4 h-4" />}
@@ -158,8 +216,46 @@ export const BacktestPanel = () => {
             >
               <Download className="w-3.5 h-3.5" /> Exportar dataset
             </Button>
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="application/json,.json"
+              onChange={handleFileSelect}
+              className="hidden"
+            />
+            <Button
+              onClick={() => fileInputRef.current?.click()}
+              variant="outline"
+              title="Carrega um dataset .json exportado antes, para testar contra mais do que os 1000 candles do buffer ao vivo"
+              className="font-black uppercase text-[10px] gap-2 h-8"
+            >
+              <Upload className="w-3.5 h-3.5" /> Carregar dataset
+            </Button>
           </div>
         </div>
+
+        {importedDataset && (
+          <div className="mt-3 p-2.5 rounded-lg bg-purple-500/10 border border-purple-500/30 flex items-center justify-between gap-2 flex-wrap">
+            <p className="text-[10px] text-purple-300 font-bold">
+              A usar dataset importado: <span className="text-white">{importedDataset.symbol}</span> ·{" "}
+              {importedDataset.candleCount} candles
+              {importedDataset.exportedAt && ` · exportado em ${new Date(importedDataset.exportedAt).toLocaleString("pt-PT")}`}
+            </p>
+            <Button
+              onClick={handleClearImport}
+              variant="outline"
+              className="font-black uppercase text-[9px] gap-1.5 h-6 px-2"
+            >
+              <X className="w-3 h-3" /> Usar ao vivo
+            </Button>
+          </div>
+        )}
+
+        {importError && (
+          <div className="mt-2 p-2 rounded-lg text-[10px] font-bold bg-red-500/10 text-red-400 border border-red-500/30">
+            {importError}
+          </div>
+        )}
 
         {/* Fase 3.0: puxar lote histórico grande directamente da Deriv */}
         <div className="mt-3 pt-3 border-t border-white/10 flex items-center gap-2 flex-wrap">
@@ -236,7 +332,7 @@ export const BacktestPanel = () => {
             <Metric label="Max Drawdown" value={`-$${result.maxDrawdown}`}
               color="text-orange-400" sub={`${result.maxDrawdownPct}% do pico`} />
             <Metric label="Total Trades" value={`${result.totalTrades}`}
-              color="text-blue-400" sub={`${candles.length} candles analisados`} />
+              color="text-blue-400" sub={`${effectiveCandles.length} candles analisados`} />
             <Metric label="Maior Sequência ✓" value={`${result.bestStreak}W`} color="text-green-400" />
             <Metric label="Pior Sequência ✗" value={`${result.worstStreak}L`} color="text-red-400" />
             <Metric label="Stake Médio" value={`$${result.avgStake}`} color="text-purple-400"
@@ -306,7 +402,7 @@ export const BacktestPanel = () => {
           <p className="text-sm font-black text-white">Sem sinais suficientes</p>
           <p className="text-[11px] text-muted-foreground mt-1">
             Nenhum sinal passou os filtros de confiança ({settings.minConfidence}%), freshness e timing
-            nos {candles.length} candles disponíveis. Tenta com mais dados ou ajusta a confiança mínima.
+            nos {effectiveCandles.length} candles disponíveis. Tenta com mais dados ou ajusta a confiança mínima.
           </p>
         </NeonCard>
       )}

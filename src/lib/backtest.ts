@@ -78,11 +78,11 @@ export interface BacktestResult {
  *    que geram trade), via o módulo partilhado lib/marketStructure.ts;
  *  - bloqueio pós-perda (mesma direcção + mesma estrutura);
  *  - freshness com o "modo-aware" (isMR) exactamente como ao vivo —
- *    incluindo o facto de, hoje, essa condição nunca ser verdadeira
- *    (ver nota no relatório da Fase 2: o texto procurado no reason não
- *    bate certo com o que strategy.ts realmente produz). Mantido
- *    idêntico de propósito, para o backtest reflectir o comportamento
- *    REAL actual, não uma versão já corrigida;
+ *    corrigido para detectar correctamente o modo Mean Reversion (antes
+ *    procurava "Mean Reversion" no reason, mas strategy.ts produz
+ *    "[MEAN_REVERSION]"; a comparação nunca batia e todo sinal MR usava
+ *    o freshnessMin de 4 em vez de 1). Corrigido aqui e em
+ *    useTradingEngine.ts ao mesmo tempo, para manter a paridade;
  *  - cooldown por tempo real entre trades (cooldownSeconds), usando o
  *    timestamp de cada candle como proxy do "agora" que existiria ao vivo;
  *  - cooldown pós-N-perdas-consecutivas (cooldownAfterLoss), com o mesmo
@@ -170,7 +170,7 @@ export function runBacktest(
     // Freshness "modo-aware" — réplica exacta (incl. bug conhecido) do que
     // useTradingEngine.ts faz hoje. Ver nota no relatório da Fase 2.
     const freshness = signal.indicators.trendFreshnessScore ?? 0;
-    const isMR = signal.indicators.reason?.includes("Mean Reversion");
+    const isMR = signal.indicators.reason?.includes("MEAN_REVERSION");
     const freshnessMin = isMR ? 1 : 4;
     if (freshness < freshnessMin) continue;
 

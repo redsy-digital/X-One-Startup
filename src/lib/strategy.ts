@@ -19,6 +19,12 @@ import {
   calculateMACD, calculateBollingerBands
 } from "./indicators";
 
+// Símbolos "low vol" da Deriv (Volatility 10/25/50 + a versão 1s do 10).
+// Antes disto era `symbol.includes("10") || ...`, que também batia com
+// "R_100" e "1HZ100V" (contêm "10" como substring de "100"), tratando os
+// dois índices de maior volatilidade como se fossem de baixa volatilidade.
+const LOW_VOL_SYMBOLS = new Set(["R_10", "R_25", "R_50", "1HZ10V"]);
+
 export const STRATEGY_PROFILES: Record<StrategyProfile, StrategyProfileConfig> = {
   conservative: {
     minConfidenceOverride: 74,
@@ -99,7 +105,7 @@ export const analyzeMarket = (
   const macdStrong = Math.abs(macdHist) > atr * 0.3;
 
   // ── Geometria ──────────────────────────────────────────────────────────────
-  const isLowVol     = symbol.includes("10") || symbol.includes("25") || symbol.includes("50");
+  const isLowVol     = LOW_VOL_SYMBOLS.has(symbol);
   const adxThreshold = isLowVol ? 18 : 25;
   const emaDistPct   = Math.abs(lastClose - emaFast) / (lastClose || 1) * 100;
   const currentDir   = lastClose >= lastOpen ? "UP" : "DOWN";
