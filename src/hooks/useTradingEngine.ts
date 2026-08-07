@@ -20,7 +20,7 @@ interface TradingEngineConfig {
   isBotRunning: boolean;
   isAuthorized: boolean;
   onWin: (profit: number) => void;
-  onLoss: () => void;
+  onLoss: (loss: number) => void;
   onForceStop: (reason: string) => void;
 }
 
@@ -73,14 +73,21 @@ export function useTradingEngine(
   // React não rastreia mudanças em refs no dependency array.
   // Com ref: o timeout NUNCA disparava → isProcessingTradeRef ficava stuck em true
   // → engine saía cedo → setLastSignal nunca chamado → UI congelava.
+  //
+  // Fix #2: isProcessing agora cobre o ciclo completo até à liquidação do
+  // contrato (não só até à compra confirmar), então o timeout tem de ser
+  // generoso o suficiente para um contrato normal (5 ticks) liquidar com
+  // folga — 15s chegava para "proposta+compra", mas era demasiado curto
+  // para "proposta+compra+liquidação" e ia disparar em contratos normais,
+  // reabrindo exactamente a janela de sobreposição que o fix #2 fecha.
   useEffect(() => {
     if (!isProcessing) return;
     const t = setTimeout(() => {
       console.warn("[TradingEngine] Trade stuck — resetting.");
       isProcessingTradeRef.current = false;
       setIsProcessing(false);
-      setError("Timeout: trade sem resposta. Bot a continuar.");
-    }, 15000);
+      setError("Timeout: contrato sem liquidação. Bot a continuar.");
+    }, 90000);
     return () => clearTimeout(t);
   }, [isProcessing]); // ← STATE, não ref
 
@@ -235,11 +242,21 @@ export function useTradingEngine(
     });
 
     const unsubBuy = derivService.on("buy", (data) => {
-      isProcessingTradeRef.current = false;
-      setIsProcessing(false);
-
-      if (data.error) { setError(data.error.message); return; }
+      if (data.error) {
+        // Compra falhou de facto — não há contrato aberto, motor livre já.
+        isProcessingTradeRef.current = false;
+        isManualTradeRef.current = false;
+        setIsProcessing(false);
+        setError(data.error.message);
+        return;
+      }
       setError(null);
+      // NOTA (fix #2): isProcessingTradeRef só é libertado na liquidação
+      // (proposal_open_contract, is_sold=true), não aqui. Libertar aqui
+      // deixava o motor disparar um 2º trade enquanto o 1º ainda estava
+      // em aberto — com stake errada (martingale/soros só actualiza no
+      // onWin/onLoss, que só corre na liquidação) e position sizing a
+      // sobrepor-se, exactamente o que a gestão de risco pretende evitar.
 
       const buy = data.buy;
       if (buy) {
@@ -282,6 +299,12 @@ export function useTradingEngine(
       processedContractsRef.current.add(cId);
       // Limpar IDs antigos para não crescer indefinidamente
       if (processedContractsRef.current.size > 50) processedContractsRef.current.clear();
+
+      // Fix #2: só agora (liquidação confirmada) o motor fica livre para o
+      // próximo trade — currentStake já reflecte o martingale/soros deste
+      // resultado antes de qualquer novo sinal poder disparar uma compra.
+      isProcessingTradeRef.current = false;
+      setIsProcessing(false);
 
       derivService.send({ balance: 1, subscribe: 1 });
 
@@ -330,7 +353,7 @@ export function useTradingEngine(
       if (isBotRunningRef.current) {
         lastActionTimeRef.current = Date.now();
         if (isWin) onWin(Number(contract.profit) || 0);
-        else onLoss();
+        else onLoss(Number(contract.profit) || 0);
       }
     });
 

@@ -134,14 +134,27 @@ export const analyzeMarket = (
       ? "TRENDING" : "CHOPPY";
 
   // ── Modo de sinal ──────────────────────────────────────────────────────────
+  // isCompressed/trendCompressed usavam limiares fixos (0.28% / 0.015%),
+  // ao contrário de adxThreshold/diSep/emaSlope/altLimit, que já escalam
+  // por isLowVol. Um símbolo genuinamente de baixa volatilidade (R_10) tem
+  // emaDistPct tipicamente bem menor do que um R_100 para um movimento de
+  // força equivalente — com o limiar fixo calibrado implicitamente em dados
+  // de R_100 (ver cabeçalho do ficheiro), quase todo candle CHOPPY do R_10
+  // caía em isCompressed antes de a pontuação MR sequer correr.
+  // Ponto de partida: mesmo ratio (~metade) já usado no emaSlope entre os
+  // dois regimes — ainda não validado com dados reais, correr via
+  // "Carregar dataset" + Executar no R_10/R_25/R_50 antes de confiar ao vivo.
+  const compressedThreshold = isLowVol ? 0.14 : 0.28;
   const isSuper      = mktCond === "CHOPPY" && alternations > 5;   // puro ruído
-  const isCompressed = mktCond === "CHOPPY" && emaDistPct < 0.28;  // sem sinal MR
+  const isCompressed = mktCond === "CHOPPY" && emaDistPct < compressedThreshold;  // sem sinal MR
   const isMR         = mktCond === "CHOPPY" && !isSuper && !isCompressed;
   const isTrend      = mktCond === "TRENDING";
   const signalMode   = isSuper || isCompressed ? "BLOCKED" : isMR ? "MEAN_REVERSION" : "TREND";
 
   // TRENDING com EMA demasiado comprimida: dados 04/07 mostram 0% WR em EMA < 0.02%
-  const trendCompressed = mktCond === "TRENDING" && emaDistPct < 0.015;
+  // (mesma ressalva de escala por volatilidade que compressedThreshold acima)
+  const trendCompressedThreshold = isLowVol ? 0.0075 : 0.015;
+  const trendCompressed = mktCond === "TRENDING" && emaDistPct < trendCompressedThreshold;
 
   // requireTrending (por perfil): implementado de verdade — antes o campo
   // existia na config e era mostrado na UI ("Só opera em TRENDING"), mas

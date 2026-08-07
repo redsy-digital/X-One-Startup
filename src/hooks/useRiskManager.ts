@@ -24,7 +24,7 @@ interface RiskManagerState {
 
 interface RiskManagerActions {
   onWin: (profit: number) => void;
-  onLoss: () => void;
+  onLoss: (loss: number) => void;
   onBotStart: (balance: number) => void;
   onBotStop: () => void;
   closeModal: () => void;
@@ -102,8 +102,13 @@ export function useRiskManager(
     }
   };
 
-  const onLoss = () => {
-    useSessionStore.getState().recordLoss(-currentStake);
+  const onLoss = (loss: number) => {
+    // Fix #4: usa o valor real reportado pela liquidação do contrato (já
+    // negativo), em vez de assumir -currentStake. currentStake é estado
+    // local deste hook — numa perda, "loss" é a verdade vinda da Deriv
+    // para ESTE contrato específico, imune a qualquer desalinhamento
+    // (ex.: se alguma vez houvesse sobreposição de trades).
+    useSessionStore.getState().recordLoss(loss);
     setSorosLevel(0);
 
     if (config.useMartingale && martingaleStep < config.maxMartingaleSteps) {

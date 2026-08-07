@@ -28,27 +28,25 @@ import {
 import { useSessionStore } from "../store/useSessionStore";
 
 // ── Timer de sessão ───────────────────────────────────────────────────────────
-// Zera apenas ao iniciar o bot. Ao parar, mantém o valor final visível
-// (mesmo comportamento do lucro/win-loss da sessão) até ao próximo start.
-function useSessionTimer(running: boolean) {
-  const [elapsed, setElapsed] = useState(0);
-  const startRef = useRef<number | null>(null);
-  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+// Lê sessionStartedAt/sessionFrozenElapsed do useBotStore (global) em vez de
+// possuir o próprio estado — assim sobrevive a navegar para outra página e
+// voltar, porque o motor de trading (e a sessão) não têm nada a ver com este
+// componente estar montado ou não.
+function useSessionTimer(running: boolean, sessionStartedAt: number | null, frozenElapsed: number) {
+  const [elapsed, setElapsed] = useState(() =>
+    running && sessionStartedAt ? Math.floor((Date.now() - sessionStartedAt) / 1000) : frozenElapsed
+  );
 
   useEffect(() => {
-    if (running) {
-      startRef.current = Date.now();
-      setElapsed(0);
-      intervalRef.current = setInterval(() => {
-        setElapsed(Math.floor((Date.now() - startRef.current!) / 1000));
-      }, 1000);
-    } else if (intervalRef.current) {
-      clearInterval(intervalRef.current);
-      intervalRef.current = null;
-      // Não reseta elapsed — mantém o tempo final da sessão visível
+    if (!running || !sessionStartedAt) {
+      setElapsed(frozenElapsed);
+      return;
     }
-    return () => { if (intervalRef.current) clearInterval(intervalRef.current); };
-  }, [running]);
+    const tick = () => setElapsed(Math.floor((Date.now() - sessionStartedAt) / 1000));
+    tick(); // valor correcto imediatamente, sem esperar 1s pelo primeiro tick
+    const id = setInterval(tick, 1000);
+    return () => clearInterval(id);
+  }, [running, sessionStartedAt, frozenElapsed]);
 
   const h = String(Math.floor(elapsed / 3600)).padStart(2, "0");
   const m = String(Math.floor((elapsed % 3600) / 60)).padStart(2, "0");
@@ -184,14 +182,14 @@ const ResultModal = ({ type, amount, onClose }: { type: "profit" | "loss"; amoun
 export const DashboardPage = () => {
   const navigate = useNavigate();
   const { isAuthorized, activeAccount } = useConnectionStore();
-  const { isBotRunning, setIsBotRunning, lossCooldown } = useBotStore();
+  const { isBotRunning, setIsBotRunning, lossCooldown, sessionStartedAt, sessionFrozenElapsed } = useBotStore();
   const { symbol, setSymbol, candles, ticks, timeframe, setTimeframe } = useMarketStore();
   const { settings } = useSettingsStore();
   const { lastSignal } = useSignalStore();
   const { wins, losses, consecutiveLosses, pnl: rawPnl, modal, closeModal } = useSessionStore();
   const pnl = Number(rawPnl) || 0;
   const logEntries = useLogEntries(60);
-  const timer = useSessionTimer(isBotRunning);
+  const timer = useSessionTimer(isBotRunning, sessionStartedAt, sessionFrozenElapsed);
   const [showAcertos, setShowAcertos] = useState(false);
   const [nowTick, setNowTick] = useState(() => Date.now());
   useEffect(() => {
