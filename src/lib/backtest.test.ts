@@ -19,9 +19,15 @@ const baseConfig: BacktestConfig = {
   payoutRate: 0.92,
 };
 
+// Nota: runBacktest devolve {session, allSignals} desde a funcionalidade de
+// "ver todos os sinais" (ignora Take Profit/Stop Loss). Os testes abaixo
+// usam .session — com stopLoss/targetProfit=500 (bem acima do que estes
+// datasets sintéticos pequenos conseguem mover o saldo), session e
+// allSignals são equivalentes em todos os casos aqui.
+
 describe("runBacktest — casos-limite", () => {
   it("devolve resultado vazio ('end') com menos de 51 candles", () => {
-    const result = runBacktest(makeFlatCandles(30), "R_100", baseConfig);
+    const result = runBacktest(makeFlatCandles(30), "R_100", baseConfig).session;
     expect(result.totalTrades).toBe(0);
     expect(result.stoppedBy).toBe("end");
     expect(result.finalBalance).toBe(1000);
@@ -30,7 +36,7 @@ describe("runBacktest — casos-limite", () => {
   it("devolve resultado vazio ('no_signals') com candles completamente planos", () => {
     // Candles 100% planos => sem volatilidade nenhuma => ADX=0, EMA colada
     // ao preço => cai sempre no bloqueio "EMA comprimida" da strategy.ts.
-    const result = runBacktest(makeFlatCandles(200), "R_100", baseConfig);
+    const result = runBacktest(makeFlatCandles(200), "R_100", baseConfig).session;
     expect(result.totalTrades).toBe(0);
     expect(result.stoppedBy).toBe("no_signals");
     expect(result.finalBalance).toBe(1000);
@@ -51,18 +57,18 @@ describe("runBacktest — invariantes estruturais do resultado", () => {
   const candles = makeChoppyCandles(400, { seed: 99, amplitude: 0.8 });
 
   it("wins + losses = totalTrades = trades.length", () => {
-    const result = runBacktest(candles, "R_100", baseConfig);
+    const result = runBacktest(candles, "R_100", baseConfig).session;
     expect(result.wins + result.losses).toBe(result.totalTrades);
     expect(result.trades.length).toBe(result.totalTrades);
   });
 
   it("finalBalance = 1000 + netPnL (dentro de arredondamento)", () => {
-    const result = runBacktest(candles, "R_100", baseConfig);
+    const result = runBacktest(candles, "R_100", baseConfig).session;
     expect(result.finalBalance).toBeCloseTo(1000 + result.netPnL, 1);
   });
 
   it("balanceCurve tem sempre totalTrades+1 pontos (inclui o saldo inicial)", () => {
-    const result = runBacktest(candles, "R_100", baseConfig);
+    const result = runBacktest(candles, "R_100", baseConfig).session;
     if (result.totalTrades > 0) {
       expect(result.balanceCurve.length).toBe(result.totalTrades + 1);
       expect(result.stakeCurve.length).toBe(result.totalTrades);
@@ -70,13 +76,13 @@ describe("runBacktest — invariantes estruturais do resultado", () => {
   });
 
   it("winRate está sempre entre 0 e 100", () => {
-    const result = runBacktest(candles, "R_100", baseConfig);
+    const result = runBacktest(candles, "R_100", baseConfig).session;
     expect(result.winRate).toBeGreaterThanOrEqual(0);
     expect(result.winRate).toBeLessThanOrEqual(100);
   });
 
   it("maxStake >= avgStake >= stake base quando há trades", () => {
-    const result = runBacktest(candles, "R_100", baseConfig);
+    const result = runBacktest(candles, "R_100", baseConfig).session;
     if (result.totalTrades > 0) {
       expect(result.maxStake).toBeGreaterThanOrEqual(result.avgStake);
     }
@@ -88,7 +94,7 @@ describe("runBacktest — invariantes estruturais do resultado", () => {
       useMartingale: true,
       martingaleMultiplier: 2,
       maxMartingaleSteps: 3,
-    });
+    }).session;
     const ceiling = baseConfig.stake * Math.pow(2, 3);
     expect(result.maxStake).toBeLessThanOrEqual(ceiling + 0.01); // +0.01: tolerância de arredondamento
   });
@@ -99,7 +105,7 @@ describe("runBacktest — invariantes estruturais do resultado", () => {
     // pode ocorrer dentro da janela restante — independentemente de como o
     // filtro de estrutura evoluiria (esse é um invariante mais frágil que
     // decidi não testar aqui, por depender de efeitos de segunda ordem).
-    const result = runBacktest(candles, "R_100", { ...baseConfig, cooldownSeconds: 999_999 });
+    const result = runBacktest(candles, "R_100", { ...baseConfig, cooldownSeconds: 999_999 }).session;
     expect(result.totalTrades).toBeLessThanOrEqual(1);
   });
 });
@@ -113,7 +119,7 @@ describe("runBacktest — achado da Fase 3: candles de 1 tick (open sempre == cl
   it("numa tendência de alta monotónica de candles de 1 tick, regista vitórias (não fica preso em 0%)", () => {
     const candles = makeSingleTickTrendingCandles(300, { step: 0.3 });
     const permissive: BacktestConfig = { ...baseConfig, minConfidence: 0, strategyProfile: "balanced" };
-    const result = runBacktest(candles, "R_75", permissive);
+    const result = runBacktest(candles, "R_75", permissive).session;
     if (result.totalTrades > 0) {
       expect(result.wins).toBeGreaterThan(0);
       // Tendência monotónica de alta: um CALL quase nunca devia perder aqui.
@@ -126,7 +132,26 @@ describe("runBacktest — Soros e flatResult", () => {
   const candles = makeChoppyCandles(400, { seed: 5, amplitude: 0.8 });
 
   it("flatResult.wins + flatResult.losses = totalTrades (mesma contagem de sinais, sem gestão de risco)", () => {
-    const result = runBacktest(candles, "R_100", baseConfig);
+    const result = runBacktest(candles, "R_100", baseConfig).session;
     expect(result.flatResult.wins + result.flatResult.losses).toBe(result.totalTrades);
+  });
+});
+
+describe("runBacktest — session vs allSignals", () => {
+  it("com stopLoss/targetProfit muito acima do alcance do dataset, session === allSignals", () => {
+    const candles = makeChoppyCandles(400, { seed: 42, amplitude: 0.8 });
+    const { session, allSignals } = runBacktest(candles, "R_100", baseConfig);
+    expect(session.totalTrades).toBe(allSignals.totalTrades);
+    expect(session.stoppedBy).toBe("end");
+  });
+
+  it("com targetProfit muito baixo, allSignals tem >= trades que session, e session pára em 'target'", () => {
+    const candles = makeChoppyCandles(600, { seed: 7, amplitude: 0.8 });
+    const tightConfig: BacktestConfig = { ...baseConfig, targetProfit: 0.01, stopLoss: 100000 };
+    const { session, allSignals } = runBacktest(candles, "R_100", tightConfig);
+    if (allSignals.totalTrades > session.totalTrades) {
+      expect(session.stoppedBy).toBe("target");
+    }
+    expect(allSignals.totalTrades).toBeGreaterThanOrEqual(session.totalTrades);
   });
 });

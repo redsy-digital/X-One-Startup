@@ -71,6 +71,17 @@ export interface BacktestResult {
   flatResult: { wins: number; losses: number; netPnL: number; winRate: number };
 }
 
+// Duas visões do MESMO dataset, computadas numa única passagem:
+//  - session:    pára no 1º Take Profit/Stop Loss, como uma sessão real ao
+//                vivo pararia (útil para "como teria corrido a sessão").
+//  - allSignals: ignora esse limite, simula o dataset inteiro — útil para
+//                contar quantos sinais/entradas a estratégia gera de facto
+//                num lote grande, sem a contagem morrer no 1º TP/SL.
+export interface BacktestRunResult {
+  session: BacktestResult;
+  allSignals: BacktestResult;
+}
+
 /**
  * Fase 2 da auditoria: esta função foi reescrita para espelhar 1:1 a
  * cadeia de filtros de useTradingEngine.ts (motor ao vivo), incluindo:
@@ -93,7 +104,7 @@ export function runBacktest(
   symbol: string,
   config: BacktestConfig,
   initialBalance = 1000
-): BacktestResult {
+): BacktestRunResult {
   const {
     stake: baseStake,
     stopLoss, targetProfit, minConfidence,
@@ -109,48 +120,34 @@ export function runBacktest(
   let consecutiveLosses = 0;
   let martingaleStep = 0;
   let sorosLevel = 0;
-  let peakBalance = initialBalance;
   let lastActionTime = 0; // ms — 0 imita o useRef(0) inicial ao vivo
 
   // Estrutura de mercado — mesma lógica partilhada com o motor ao vivo
   const structureState = createStructureState();
   let candlesSinceLastLoss = 0; // só para paridade estrutural; não filtra decisões (também não filtra ao vivo)
 
-  // Métricas
-  let wins = 0;
-  let losses = 0;
-  let totalStake = 0;
-  let maxStake = 0;
-  let maxDrawdown = 0;
-  let currentStreak = 0;
-  let bestStreak = 0;
-  let worstStreak = 0;
-  let currentStreakType: "WIN" | "LOSS" | null = null;
-  let stoppedBy: BacktestResult["stoppedBy"] = "end";
-  let stoppedAtTrade = 0;
-
-  // Flat (sem Martingale) para comparação
-  let flatWins = 0;
-  let flatLosses = 0;
-  let flatPnL = 0;
-
   const trades: BacktestTrade[] = [];
-  const balanceCurve: BacktestResult["balanceCurve"] = [{ index: 0, balance: initialBalance }];
-  const stakeCurve: BacktestResult["stakeCurve"] = [];
+
+  // Ponto em que uma sessão real teria parado (1º Take Profit/Stop Loss).
+  // NÃO interrompe o loop — só regista, para a simulação continuar até ao
+  // fim do dataset e dar a visão "todos os sinais" na mesma passagem.
+  let sessionStopIndex: number | null = null;
+  let sessionStoppedBy: BacktestResult["stoppedBy"] = "end";
 
   // Mínimo de candles necessários para análise (igual ao mínimo de analyzeMarket)
   const MIN_CANDLES = 50;
   if (candles.length < MIN_CANDLES + 1) {
-    return emptyResult("end", initialBalance);
+    const empty = emptyResult("end", initialBalance);
+    return { session: empty, allSignals: empty };
   }
 
   for (let i = MIN_CANDLES; i < candles.length - 1; i++) {
-    // Verificar condições de paragem (equivalente ao useEffect de useRiskManager,
-    // que corre sempre que o saldo muda — aqui: no início de cada iteração,
-    // reflectindo o saldo resultante do trade anterior)
-    const pnl = balance - initialBalance;
-    if (pnl >= targetProfit) { stoppedBy = "target"; stoppedAtTrade = trades.length; break; }
-    if (pnl <= -stopLoss) { stoppedBy = "stoploss"; stoppedAtTrade = trades.length; break; }
+    // Verificar se uma sessão real já teria parado aqui (só regista a 1ª vez)
+    if (sessionStopIndex === null) {
+      const pnl = balance - initialBalance;
+      if (pnl >= targetProfit) { sessionStopIndex = trades.length; sessionStoppedBy = "target"; }
+      else if (pnl <= -stopLoss) { sessionStopIndex = trades.length; sessionStoppedBy = "stoploss"; }
+    }
 
     const slice = candles.slice(0, i + 1);
     const nowMs = candles[i].time * 1000; // proxy do Date.now() ao vivo, usando o tempo real do candle
@@ -167,8 +164,7 @@ export function runBacktest(
     // Bloqueio pós-perda: mesma direcção, mesma estrutura
     if (isBlockedByStructure(structureState, signal.type as "CALL" | "PUT")) continue;
 
-    // Freshness "modo-aware" — réplica exacta (incl. bug conhecido) do que
-    // useTradingEngine.ts faz hoje. Ver nota no relatório da Fase 2.
+    // Freshness "modo-aware" — réplica exacta do que useTradingEngine.ts faz.
     const freshness = signal.indicators.trendFreshnessScore ?? 0;
     const isMR = signal.indicators.reason?.includes("MEAN_REVERSION");
     const freshnessMin = isMR ? 1 : 4;
@@ -191,12 +187,7 @@ export function runBacktest(
 
     // Determinar resultado: compara o close seguinte contra o close de
     // ENTRADA (candle do sinal), não contra o open do próprio candle
-    // seguinte. Achado ao analisar dados reais da Fase 3: em candles de
-    // 1 tick (open sempre == close, comuns em timeframes de 1s em
-    // símbolos que não tickam a cada segundo, ex. R_100), a comparação
-    // antiga nunca podia ser verdadeira — dava sempre 0% de acerto,
-    // não porque a estratégia seja má, mas porque a métrica em si nunca
-    // conseguia registar uma vitória.
+    // seguinte (achado da Fase 3 — ver histórico do relatório de auditoria).
     const nextCandle = candles[i + 1];
     const entryClose = candles[i].close;
     const isWin = signal.type === "CALL"
@@ -208,31 +199,9 @@ export function runBacktest(
 
     const profit = isWin ? currentStake * payoutRate : -currentStake;
     balance += profit;
-    totalStake += currentStake;
-    maxStake = Math.max(maxStake, currentStake);
-
-    // Drawdown
-    if (balance > peakBalance) peakBalance = balance;
-    const drawdown = peakBalance - balance;
-    if (drawdown > maxDrawdown) maxDrawdown = drawdown;
-
-    // Flat (stake fixo, sem gestão)
-    const flatProfit = isWin ? baseStake * payoutRate : -baseStake;
-    flatPnL += flatProfit;
-    if (isWin) flatWins++; else flatLosses++;
-
-    // Sequências
-    if (currentStreakType === (isWin ? "WIN" : "LOSS")) {
-      currentStreak++;
-    } else {
-      currentStreak = 1;
-      currentStreakType = isWin ? "WIN" : "LOSS";
-    }
-    if (isWin) bestStreak = Math.max(bestStreak, currentStreak);
-    else worstStreak = Math.max(worstStreak, currentStreak);
 
     // Registar trade
-    const tradeRecord: BacktestTrade = {
+    trades.push({
       index: i,
       type: signal.type as "CALL" | "PUT",
       stake: currentStake,
@@ -241,12 +210,7 @@ export function runBacktest(
       balance,
       confidence: signal.confidence,
       martingaleStep,
-    };
-    trades.push(tradeRecord);
-    balanceCurve.push({ index: trades.length, balance: Math.round(balance * 100) / 100 });
-    stakeCurve.push({ index: trades.length, stake: Math.round(currentStake * 100) / 100 });
-
-    if (isWin) { wins++; } else { losses++; }
+    });
 
     recordStructureResult(structureState, isWin ? "WON" : "LOST");
     if (!isWin) candlesSinceLastLoss = 0;
@@ -279,21 +243,92 @@ export function runBacktest(
     }
   }
 
-  if (trades.length === 0) return emptyResult("no_signals", initialBalance);
+  if (trades.length === 0) {
+    const empty = emptyResult("no_signals", initialBalance);
+    return { session: empty, allSignals: empty };
+  }
+
+  const sessionTrades = sessionStopIndex !== null ? trades.slice(0, sessionStopIndex) : trades;
+  const session = sessionTrades.length > 0
+    ? summarize(sessionTrades, initialBalance, baseStake, payoutRate, sessionStoppedBy)
+    : emptyResult(sessionStoppedBy, initialBalance);
+  const allSignals = summarize(trades, initialBalance, baseStake, payoutRate, "end");
+
+  return { session, allSignals };
+}
+
+// Deriva um BacktestResult completo (P&L, drawdown, sequências, flatResult,
+// curvas) a partir de uma lista de trades já simulados. Usado duas vezes por
+// runBacktest — uma para a fatia "sessão" (até ao TP/SL), outra para o
+// array inteiro ("todos os sinais") — sem repetir a simulação em si.
+function summarize(
+  trades: BacktestTrade[],
+  initialBalance: number,
+  baseStake: number,
+  payoutRate: number,
+  stoppedBy: BacktestResult["stoppedBy"],
+): BacktestResult {
+  if (trades.length === 0) return emptyResult(stoppedBy, initialBalance);
+
+  let totalStake = 0;
+  let maxStake = 0;
+  let peakBalance = initialBalance;
+  let maxDrawdown = 0;
+  let currentStreak = 0;
+  let bestStreak = 0;
+  let worstStreak = 0;
+  let currentStreakType: "WIN" | "LOSS" | null = null;
+  let wins = 0;
+  let losses = 0;
+  let flatWins = 0;
+  let flatLosses = 0;
+  let flatPnL = 0;
+
+  const balanceCurve: BacktestResult["balanceCurve"] = [{ index: 0, balance: initialBalance }];
+  const stakeCurve: BacktestResult["stakeCurve"] = [];
+
+  for (let k = 0; k < trades.length; k++) {
+    const t = trades[k];
+    totalStake += t.stake;
+    maxStake = Math.max(maxStake, t.stake);
+
+    if (t.balance > peakBalance) peakBalance = t.balance;
+    const drawdown = peakBalance - t.balance;
+    if (drawdown > maxDrawdown) maxDrawdown = drawdown;
+
+    const isWin = t.result === "WON";
+    const flatProfit = isWin ? baseStake * payoutRate : -baseStake;
+    flatPnL += flatProfit;
+    if (isWin) flatWins++; else flatLosses++;
+    if (isWin) wins++; else losses++;
+
+    if (currentStreakType === (isWin ? "WIN" : "LOSS")) {
+      currentStreak++;
+    } else {
+      currentStreak = 1;
+      currentStreakType = isWin ? "WIN" : "LOSS";
+    }
+    if (isWin) bestStreak = Math.max(bestStreak, currentStreak);
+    else worstStreak = Math.max(worstStreak, currentStreak);
+
+    balanceCurve.push({ index: k + 1, balance: Math.round(t.balance * 100) / 100 });
+    stakeCurve.push({ index: k + 1, stake: Math.round(t.stake * 100) / 100 });
+  }
 
   const totalTrades = trades.length;
-  const winRate = totalTrades > 0 ? (wins / totalTrades) * 100 : 0;
-  const netPnL = balance - initialBalance;
+  const finalBalance = trades[trades.length - 1].balance;
+  const netPnL = finalBalance - initialBalance;
+  const winRate = (wins / totalTrades) * 100;
   const roi = (netPnL / initialBalance) * 100;
   const maxDrawdownPct = peakBalance > 0 ? (maxDrawdown / peakBalance) * 100 : 0;
-  const avgStake = totalTrades > 0 ? totalStake / totalTrades : baseStake;
+  const avgStake = totalStake / totalTrades;
   const flatWinRate = flatWins + flatLosses > 0 ? (flatWins / (flatWins + flatLosses)) * 100 : 0;
 
   return {
     totalTrades, wins, losses,
     winRate: Math.round(winRate * 10) / 10,
     netPnL: Math.round(netPnL * 100) / 100,
-    finalBalance: Math.round(balance * 100) / 100,
+    finalBalance: Math.round(finalBalance * 100) / 100,
     roi: Math.round(roi * 10) / 10,
     maxDrawdown: Math.round(maxDrawdown * 100) / 100,
     maxDrawdownPct: Math.round(maxDrawdownPct * 10) / 10,
@@ -301,7 +336,7 @@ export function runBacktest(
     avgStake: Math.round(avgStake * 100) / 100,
     bestStreak, worstStreak,
     stoppedBy,
-    stoppedAtTrade: stoppedAtTrade || totalTrades,
+    stoppedAtTrade: totalTrades,
     balanceCurve, stakeCurve, trades,
     flatResult: {
       wins: flatWins, losses: flatLosses,

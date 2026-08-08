@@ -5,7 +5,7 @@ import { cn } from "../lib/utils";
 import { NeonCard } from "./NeonCard";
 import { Button } from "./ui/button";
 import { Badge } from "./ui/badge";
-import { runBacktest, BacktestResult } from "../lib/backtest";
+import { runBacktest, BacktestRunResult } from "../lib/backtest";
 import { downloadCandleDataset, fetchAndDownloadHistoricalDataset, CandleDataset } from "../lib/dataset";
 import { useSettingsStore } from "../store/useSettingsStore";
 import { useMarketStore } from "../store/useMarketStore";
@@ -49,7 +49,11 @@ export const BacktestPanel = () => {
   const { settings } = useSettingsStore();
   const { candles, symbol, timeframe } = useMarketStore();
   const { isBotRunning } = useBotStore();
-  const [result, setResult] = useState<BacktestResult | null>(null);
+  const [result, setResult] = useState<BacktestRunResult | null>(null);
+  // "session": pára no 1º Take Profit/Stop Loss (como uma sessão real ao
+  // vivo pararia). "allSignals": ignora esse limite — todos os sinais que
+  // a estratégia gerou no dataset inteiro, para contar entradas de facto.
+  const [viewMode, setViewMode] = useState<"session" | "allSignals">("session");
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [historyCount, setHistoryCount] = useState(5000);
@@ -178,6 +182,8 @@ export const BacktestPanel = () => {
     end:        { text: "Todos os candles usados", color: "text-blue-400", icon: <BarChart3 className="w-3.5 h-3.5" /> },
     no_signals: { text: "Sem sinais suficientes", color: "text-amber-400", icon: <AlertTriangle className="w-3.5 h-3.5" /> },
   };
+
+  const displayed = result ? result[viewMode] : null;
 
   return (
     <div className="space-y-4">
@@ -310,35 +316,66 @@ export const BacktestPanel = () => {
       </NeonCard>
 
       {/* Resultados */}
-      {result && result.totalTrades > 0 && (
+      {result && (
+        <div className="flex items-center gap-2 px-1 flex-wrap">
+          <span className="text-[9px] text-muted-foreground uppercase font-black tracking-widest">Ver:</span>
+          <div className="flex rounded-lg border border-white/10 overflow-hidden">
+            <button
+              onClick={() => setViewMode("session")}
+              className={cn(
+                "px-3 py-1.5 text-[10px] font-black uppercase transition-colors",
+                viewMode === "session" ? "bg-purple-600 text-white" : "bg-white/5 text-muted-foreground hover:bg-white/10"
+              )}
+            >
+              Sessão (pára em TP/SL)
+            </button>
+            <button
+              onClick={() => setViewMode("allSignals")}
+              className={cn(
+                "px-3 py-1.5 text-[10px] font-black uppercase transition-colors",
+                viewMode === "allSignals" ? "bg-purple-600 text-white" : "bg-white/5 text-muted-foreground hover:bg-white/10"
+              )}
+            >
+              Todos os sinais
+            </button>
+          </div>
+          {viewMode === "allSignals" && (result.session.stoppedBy === "target" || result.session.stoppedBy === "stoploss") && (
+            <span className="text-[9px] text-muted-foreground basis-full">
+              A sessão real teria parado aos {result.session.totalTrades} trades ({stoppedLabel[result.session.stoppedBy]?.text.toLowerCase()}).
+            </span>
+          )}
+        </div>
+      )}
+
+      {displayed && displayed.totalTrades > 0 && (
         <>
           {/* Paragem + resumo */}
           <div className="flex items-center gap-2 px-1">
-            <span className={cn("flex items-center gap-1.5 text-[11px] font-black", stoppedLabel[result.stoppedBy]?.color)}>
-              {stoppedLabel[result.stoppedBy]?.icon}
-              {stoppedLabel[result.stoppedBy]?.text}
+            <span className={cn("flex items-center gap-1.5 text-[11px] font-black", stoppedLabel[displayed.stoppedBy]?.color)}>
+              {stoppedLabel[displayed.stoppedBy]?.icon}
+              {viewMode === "allSignals" ? "Dataset inteiro simulado" : stoppedLabel[displayed.stoppedBy]?.text}
             </span>
-            <span className="text-[10px] text-muted-foreground">após {result.stoppedAtTrade} trades</span>
+            <span className="text-[10px] text-muted-foreground">após {displayed.stoppedAtTrade} trades</span>
           </div>
 
           {/* Métricas principais */}
           <div className="grid grid-cols-2 gap-2">
-            <Metric label="P&L Líquido" value={`${result.netPnL >= 0 ? "+" : ""}$${result.netPnL}`}
-              color={result.netPnL >= 0 ? "text-green-400" : "text-red-400"} size="large"
-              sub={`ROI ${result.roi >= 0 ? "+" : ""}${result.roi}%`} />
-            <Metric label="Win Rate" value={`${result.winRate}%`}
-              color={result.winRate >= 55 ? "text-green-400" : result.winRate >= 45 ? "text-yellow-400" : "text-red-400"}
-              size="large" sub={`${result.wins}W / ${result.losses}L`} />
-            <Metric label="Max Drawdown" value={`-$${result.maxDrawdown}`}
-              color="text-orange-400" sub={`${result.maxDrawdownPct}% do pico`} />
-            <Metric label="Total Trades" value={`${result.totalTrades}`}
+            <Metric label="P&L Líquido" value={`${displayed.netPnL >= 0 ? "+" : ""}$${displayed.netPnL}`}
+              color={displayed.netPnL >= 0 ? "text-green-400" : "text-red-400"} size="large"
+              sub={`ROI ${displayed.roi >= 0 ? "+" : ""}${displayed.roi}%`} />
+            <Metric label="Win Rate" value={`${displayed.winRate}%`}
+              color={displayed.winRate >= 55 ? "text-green-400" : displayed.winRate >= 45 ? "text-yellow-400" : "text-red-400"}
+              size="large" sub={`${displayed.wins}W / ${displayed.losses}L`} />
+            <Metric label="Max Drawdown" value={`-$${displayed.maxDrawdown}`}
+              color="text-orange-400" sub={`${displayed.maxDrawdownPct}% do pico`} />
+            <Metric label="Total Trades" value={`${displayed.totalTrades}`}
               color="text-blue-400" sub={`${effectiveCandles.length} candles analisados`} />
-            <Metric label="Maior Sequência ✓" value={`${result.bestStreak}W`} color="text-green-400" />
-            <Metric label="Pior Sequência ✗" value={`${result.worstStreak}L`} color="text-red-400" />
-            <Metric label="Stake Médio" value={`$${result.avgStake}`} color="text-purple-400"
-              sub={`Máx: $${result.maxStake}`} />
-            <Metric label="Saldo Final" value={`$${result.finalBalance}`}
-              color={result.finalBalance >= INITIAL_BALANCE ? "text-green-400" : "text-red-400"}
+            <Metric label="Maior Sequência ✓" value={`${displayed.bestStreak}W`} color="text-green-400" />
+            <Metric label="Pior Sequência ✗" value={`${displayed.worstStreak}L`} color="text-red-400" />
+            <Metric label="Stake Médio" value={`$${displayed.avgStake}`} color="text-purple-400"
+              sub={`Máx: $${displayed.maxStake}`} />
+            <Metric label="Saldo Final" value={`$${displayed.finalBalance}`}
+              color={displayed.finalBalance >= INITIAL_BALANCE ? "text-green-400" : "text-red-400"}
               sub={`de $${INITIAL_BALANCE}`} />
           </div>
 
@@ -348,13 +385,13 @@ export const BacktestPanel = () => {
               Curva de Saldo
             </p>
             <ResponsiveContainer width="100%" height={160}>
-              <LineChart data={result.balanceCurve} margin={{ top: 4, right: 8, left: -20, bottom: 0 }}>
+              <LineChart data={displayed.balanceCurve} margin={{ top: 4, right: 8, left: -20, bottom: 0 }}>
                 <XAxis dataKey="index" tick={{ fontSize: 9, fill: "#6b7280" }} tickLine={false} axisLine={false} />
                 <YAxis tick={{ fontSize: 9, fill: "#6b7280" }} tickLine={false} axisLine={false}
                   tickFormatter={v => `$${v}`} domain={["auto", "auto"]} />
                 <Tooltip content={<ChartTooltip />} />
                 <ReferenceLine y={INITIAL_BALANCE} stroke="#ffffff20" strokeDasharray="4 4" />
-                <Line type="monotone" dataKey="balance" stroke={result.netPnL >= 0 ? "#22c55e" : "#ef4444"}
+                <Line type="monotone" dataKey="balance" stroke={displayed.netPnL >= 0 ? "#22c55e" : "#ef4444"}
                   strokeWidth={2} dot={false} isAnimationActive={false} />
               </LineChart>
             </ResponsiveContainer>
@@ -368,26 +405,26 @@ export const BacktestPanel = () => {
             <div className="grid grid-cols-2 gap-3">
               <div className="p-3 rounded-xl border border-purple-500/30 bg-purple-500/5 space-y-1">
                 <p className="text-[9px] text-purple-400 font-black uppercase">Com Gestão Activa</p>
-                <p className={cn("text-base font-black", result.netPnL >= 0 ? "text-green-400" : "text-red-400")}>
-                  {result.netPnL >= 0 ? "+" : ""}${result.netPnL}
+                <p className={cn("text-base font-black", displayed.netPnL >= 0 ? "text-green-400" : "text-red-400")}>
+                  {displayed.netPnL >= 0 ? "+" : ""}${displayed.netPnL}
                 </p>
-                <p className="text-[9px] text-muted-foreground">{result.winRate}% WR · Stake máx ${ result.maxStake}</p>
+                <p className="text-[9px] text-muted-foreground">{displayed.winRate}% WR · Stake máx ${ displayed.maxStake}</p>
               </div>
               <div className="p-3 rounded-xl border border-white/10 bg-white/5 space-y-1">
                 <p className="text-[9px] text-muted-foreground font-black uppercase">Stake Fixo ${settings.stake}</p>
-                <p className={cn("text-base font-black", result.flatResult.netPnL >= 0 ? "text-green-400" : "text-red-400")}>
-                  {result.flatResult.netPnL >= 0 ? "+" : ""}${result.flatResult.netPnL}
+                <p className={cn("text-base font-black", displayed.flatResult.netPnL >= 0 ? "text-green-400" : "text-red-400")}>
+                  {displayed.flatResult.netPnL >= 0 ? "+" : ""}${displayed.flatResult.netPnL}
                 </p>
-                <p className="text-[9px] text-muted-foreground">{result.flatResult.winRate}% WR · Stake fixo</p>
+                <p className="text-[9px] text-muted-foreground">{displayed.flatResult.winRate}% WR · Stake fixo</p>
               </div>
             </div>
 
             {/* Aviso se Martingale amplifica risco */}
-            {settings.useMartingale && result.maxStake > settings.stake * 4 && (
+            {settings.useMartingale && displayed.maxStake > settings.stake * 4 && (
               <div className="flex items-start gap-2 p-3 bg-amber-500/10 border border-amber-500/20 rounded-lg">
                 <AlertTriangle className="w-3.5 h-3.5 text-amber-400 shrink-0 mt-0.5" />
                 <p className="text-[10px] text-amber-300">
-                  O Martingale atingiu stake de ${result.maxStake} (${(result.maxStake / settings.stake).toFixed(0)}x o base).
+                  O Martingale atingiu stake de ${displayed.maxStake} (${(displayed.maxStake / settings.stake).toFixed(0)}x o base).
                   Certifica-te de que o saldo suporta sequências de perdas.
                 </p>
               </div>
@@ -396,7 +433,7 @@ export const BacktestPanel = () => {
         </>
       )}
 
-      {result && result.totalTrades === 0 && (
+      {displayed && displayed.totalTrades === 0 && (
         <NeonCard variant="blue" className="p-6 text-center">
           <AlertTriangle className="w-8 h-8 text-amber-400 mx-auto mb-2" />
           <p className="text-sm font-black text-white">Sem sinais suficientes</p>
