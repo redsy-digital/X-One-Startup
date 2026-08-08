@@ -29,8 +29,13 @@ export const STRATEGY_PROFILES: Record<StrategyProfile, StrategyProfileConfig> =
   conservative: {
     minConfidenceOverride: 74,
     requireTrending: true,
-    dominanceMultiplier: 1.30,
-    minWinScore: 60,
+    // minWinScore 60→56, dominanceMultiplier 1.30→1.24: único lever que
+    // sobra para aumentar entradas no conservador sem tocar em
+    // requireTrending (fica assim por decisão explícita — só tendência
+    // confirmada). Continua bem mais seletivo que o balanced (52/1.18) —
+    // ponto de partida, validar com "Todos os sinais" antes de confiar.
+    dominanceMultiplier: 1.24,
+    minWinScore: 56,
     freshnessWeight: 1.2,
     timingWeight: 1.2,
     emaDistWeight: 1.0,
