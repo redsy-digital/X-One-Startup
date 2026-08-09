@@ -24,6 +24,13 @@ export interface BacktestConfig {
   maxConsecutiveLosses: number;
   strategyProfile: StrategyProfile;
   payoutRate: number; // 0.0–1.0 (ex: 0.92 = 92%)
+  // Duração do contrato em ticks — mesmo campo que o motor ao vivo usa em
+  // getPriceProposal. Assume 1 candle = 1 tick (verdade em dados nativos
+  // de 1s, como os que "Baixar histórico real" produz); num dataset já
+  // reamostrado para candles mais largos, este número deixa de corresponder
+  // a ticks reais — resultado ainda válido como "N candles à frente", só
+  // não é literalmente "N ticks" nesse caso.
+  contractDurationTicks: number;
   /** Fase 3.3 — sobrepõe campos da config do perfil (ex.: minWinScore,
    *  dominanceMultiplier) só para este backtest, para a varredura de
    *  parâmetros. Nunca usado pelo motor ao vivo. */
@@ -112,6 +119,7 @@ export function runBacktest(
     useMartingale, martingaleMultiplier, maxMartingaleSteps,
     useSoros, maxSorosLevels,
     maxConsecutiveLosses, strategyProfile, payoutRate, strategyConfigOverride,
+    contractDurationTicks,
   } = config;
 
   // Estado da simulação
@@ -136,12 +144,15 @@ export function runBacktest(
 
   // Mínimo de candles necessários para análise (igual ao mínimo de analyzeMarket)
   const MIN_CANDLES = 50;
-  if (candles.length < MIN_CANDLES + 1) {
+  // Defensivo: configs antigas sem este campo (ou 0/negativo) caem para 1
+  // candle à frente — o comportamento que sempre existiu antes desta opção.
+  const ticksAhead = contractDurationTicks && contractDurationTicks > 0 ? contractDurationTicks : 1;
+  if (candles.length < MIN_CANDLES + ticksAhead) {
     const empty = emptyResult("end", initialBalance);
     return { session: empty, allSignals: empty };
   }
 
-  for (let i = MIN_CANDLES; i < candles.length - 1; i++) {
+  for (let i = MIN_CANDLES; i < candles.length - ticksAhead; i++) {
     // Verificar se uma sessão real já teria parado aqui (só regista a 1ª vez)
     if (sessionStopIndex === null) {
       const pnl = balance - initialBalance;
@@ -188,7 +199,7 @@ export function runBacktest(
     // Determinar resultado: compara o close seguinte contra o close de
     // ENTRADA (candle do sinal), não contra o open do próprio candle
     // seguinte (achado da Fase 3 — ver histórico do relatório de auditoria).
-    const nextCandle = candles[i + 1];
+    const nextCandle = candles[i + ticksAhead];
     const entryClose = candles[i].close;
     const isWin = signal.type === "CALL"
       ? nextCandle.close > entryClose

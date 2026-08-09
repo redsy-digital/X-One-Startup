@@ -132,6 +132,12 @@ const AcertosModal = ({ onClose }: { onClose: () => void }) => {
             {row("Stop Loss ($)", "stopLoss", "0.5", 0.01)}
             {row("Conf. Mínima (%)", "minConfidence", "1", 0, 100)}
           </div>
+          <div className="space-y-1">
+            {row("Duração do Contrato (ticks)", "contractDurationTicks", "1", 1, 20)}
+            <p className="text-[9px] text-muted-foreground/70">
+              Mesmo valor usado ao vivo e no backtest — os dois ficam sempre em sincronia.
+            </p>
+          </div>
           <div className="p-3 bg-white/5 rounded-xl border border-white/10 space-y-2">
             {tog("Martingale", "useMartingale")}
             {s.useMartingale && <div className="grid grid-cols-2 gap-2">{row("Steps", "maxMartingaleSteps", "1", 0)}{row("Multiplicador", "martingaleMultiplier", "0.1", 0.1)}</div>}

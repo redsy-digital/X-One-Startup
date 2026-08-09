@@ -26,7 +26,7 @@ export const TradingEngineRunner = () => {
   const { symbol, candles } = useMarketStore();
   const { settings } = useSettingsStore();
   const {
-    stake, targetProfit, stopLoss, minConfidence, cooldownSeconds,
+    stake, targetProfit, stopLoss, minConfidence, cooldownSeconds, contractDurationTicks,
     strategyProfile, useMartingale, martingaleMultiplier, maxMartingaleSteps,
     useSoros, maxSorosLevels, maxConsecutiveLosses, cooldownAfterLoss,
   } = settings;
@@ -70,7 +70,7 @@ export const TradingEngineRunner = () => {
     {
       symbol, candles,
       currentStake: riskState.currentStake,
-      stake, minConfidence, cooldownSeconds,
+      stake, minConfidence, cooldownSeconds, contractDurationTicks,
       strategyProfile, maxConsecutiveLosses, cooldownAfterLoss,
       isBotRunning, isAuthorized,
       onWin: riskActions.onWin,

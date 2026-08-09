@@ -18,6 +18,10 @@ export interface BotSettings {
   maxSorosLevels: number;
   maxConsecutiveLosses: number;
   cooldownAfterLoss: number;
+  // Duração do contrato em ticks (Deriv duration_unit "t"). Usado tanto no
+  // motor ao vivo (getPriceProposal) como no backtest — os dois lêem daqui,
+  // para nunca poderem dessincronizar como aconteceu antes desta funcionalidade.
+  contractDurationTicks: number;
 }
 
 export const DEFAULT_SETTINGS: BotSettings = {
@@ -34,6 +38,7 @@ export const DEFAULT_SETTINGS: BotSettings = {
   maxSorosLevels: 3,
   maxConsecutiveLosses: 5,
   cooldownAfterLoss: 30,
+  contractDurationTicks: 5, // valor histórico — muda explicitamente se quiseres outro
 };
 
 interface SettingsState {
@@ -66,6 +71,7 @@ async function saveToSupabase(settings: BotSettings) {
       max_soros_levels: settings.maxSorosLevels,
       max_consecutive_losses: settings.maxConsecutiveLosses,
       cooldown_after_loss: settings.cooldownAfterLoss,
+      contract_duration_ticks: settings.contractDurationTicks,
     }, { onConflict: "user_id" });
     if (!error) useSettingsStore.setState({ isDirty: false });
   } catch (e) {
@@ -106,6 +112,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
           maxSorosLevels: Number(data.max_soros_levels),
           maxConsecutiveLosses: Number(data.max_consecutive_losses),
           cooldownAfterLoss: Number(data.cooldown_after_loss),
+          contractDurationTicks: Number(data.contract_duration_ticks) || 5,
         },
       });
       logger.system("Settings carregadas do Supabase");

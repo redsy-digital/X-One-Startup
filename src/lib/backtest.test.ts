@@ -17,6 +17,7 @@ const baseConfig: BacktestConfig = {
   maxConsecutiveLosses: 999,
   strategyProfile: "balanced",
   payoutRate: 0.92,
+  contractDurationTicks: 1, // preserva o comportamento original destes testes (1 candle à frente)
 };
 
 // Nota: runBacktest devolve {session, allSignals} desde a funcionalidade de

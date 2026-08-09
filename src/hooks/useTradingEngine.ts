@@ -14,6 +14,7 @@ interface TradingEngineConfig {
   stake: number;
   minConfidence: number;
   cooldownSeconds: number;
+  contractDurationTicks: number;
   strategyProfile: StrategyProfile;
   maxConsecutiveLosses: number;
   cooldownAfterLoss: number;
@@ -45,7 +46,7 @@ export function useTradingEngine(
 ): TradingEngineResult {
   const {
     symbol, candles, currentStake, stake,
-    minConfidence, cooldownSeconds,
+    minConfidence, cooldownSeconds, contractDurationTicks,
     strategyProfile, maxConsecutiveLosses, cooldownAfterLoss,
     isBotRunning, isAuthorized,
     onWin, onLoss, onForceStop,
@@ -120,9 +121,9 @@ export function useTradingEngine(
       setIsProcessing(true);
       logger.trade(`▶ Trade manual ${type} | $${stake.toFixed(2)} | ${symbol}`);
       entrySignalRef.current = lastSignalRef.current; // captura sinal manual
-      derivService.getPriceProposal(symbol, type, stake, 5, "t");
+      derivService.getPriceProposal(symbol, type, stake, contractDurationTicks, "t");
     },
-    [isAuthorized, symbol, stake]
+    [isAuthorized, symbol, stake, contractDurationTicks]
   );
 
   // ── Engine automática ─────────────────────────────────────────────────────
@@ -216,8 +217,8 @@ export function useTradingEngine(
     setIsProcessing(true);
     lastActionTimeRef.current = now;
     structure.recordTrade(analysis.type as "CALL" | "PUT");
-    derivService.getPriceProposal(symbol, analysis.type as "CALL" | "PUT", currentStake, 5, "t");
-  }, [candles, isBotRunning, currentStake, minConfidence, cooldownSeconds, strategyProfile, maxConsecutiveLosses]);
+    derivService.getPriceProposal(symbol, analysis.type as "CALL" | "PUT", currentStake, contractDurationTicks, "t");
+  }, [candles, isBotRunning, currentStake, minConfidence, cooldownSeconds, contractDurationTicks, strategyProfile, maxConsecutiveLosses]);
 
   // ── Listeners WebSocket ───────────────────────────────────────────────────
   useEffect(() => {

@@ -163,6 +163,7 @@ export const BacktestPanel = () => {
         maxConsecutiveLosses: settings.maxConsecutiveLosses,
         strategyProfile: settings.strategyProfile,
         payoutRate: PAYOUT_RATE,
+        contractDurationTicks: settings.contractDurationTicks,
       }, INITIAL_BALANCE);
       setResult(res);
     } catch (e: any) {
