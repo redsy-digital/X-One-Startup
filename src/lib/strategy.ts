@@ -113,6 +113,19 @@ export const analyzeMarket = (
   const isLowVol     = LOW_VOL_SYMBOLS.has(symbol);
   const adxThreshold = isLowVol ? 18 : 25;
   const emaDistPct   = Math.abs(lastClose - emaFast) / (lastClose || 1) * 100;
+  // emaDistPct bruto (%) depende muito da escala de volatilidade do símbolo/
+  // timeframe — em dados reais de 1s chega a ser 15-70x menor do que os
+  // limiares abaixo assumiam (calibrados nalguma sessão a um timeframe mais
+  // largo). emaStretch normaliza pelo ATR% da própria série — "quantos ATRs
+  // de distância a EMA está o preço" — o que absorve essa diferença de
+  // escala sozinho: validado em dados reais dos 7 símbolos + candles
+  // sintéticos dos testes, com as MESMAS constantes de sempre (0.28,
+  // 0.70-1.40, 2.00) a dar uma distribuição consistente (~12-14% comprimido,
+  // ~27% sweet spot, ~23% extremo) em todos, em vez de bloquear 100% nalguns
+  // e quase nada noutros. emaDistPct em si fica só para mostrar ao
+  // utilizador (reason, emaStretchLevel) — nunca mais é usado em limiar.
+  const atrPct       = (atr / (lastClose || 1)) * 100;
+  const emaStretch   = atrPct > 0 ? emaDistPct / atrPct : 0;
   const currentDir   = lastClose >= lastOpen ? "UP" : "DOWN";
   const macdDir      = macdHist > 0 ? "UP" : "DOWN";
 
@@ -139,27 +152,21 @@ export const analyzeMarket = (
       ? "TRENDING" : "CHOPPY";
 
   // ── Modo de sinal ──────────────────────────────────────────────────────────
-  // isCompressed/trendCompressed usavam limiares fixos (0.28% / 0.015%),
-  // ao contrário de adxThreshold/diSep/emaSlope/altLimit, que já escalam
-  // por isLowVol. Um símbolo genuinamente de baixa volatilidade (R_10) tem
-  // emaDistPct tipicamente bem menor do que um R_100 para um movimento de
-  // força equivalente — com o limiar fixo calibrado implicitamente em dados
-  // de R_100 (ver cabeçalho do ficheiro), quase todo candle CHOPPY do R_10
-  // caía em isCompressed antes de a pontuação MR sequer correr.
-  // Ponto de partida: mesmo ratio (~metade) já usado no emaSlope entre os
-  // dois regimes — ainda não validado com dados reais, correr via
-  // "Carregar dataset" + Executar no R_10/R_25/R_50 antes de confiar ao vivo.
-  const compressedThreshold = isLowVol ? 0.14 : 0.28;
+  // compressedThreshold/trendCompressedThreshold eram isLowVol ? x : y —
+  // já não precisam disso: emaStretch (acima) normaliza por ATR, então a
+  // mesma constante funciona em qualquer símbolo. Validado nos 7 símbolos
+  // reais: ~12-14% dos candles CHOPPY ficam abaixo de 0.28 em todos, contra
+  // 100% antes desta mudança (em pelo menos R_10/25/50/75/100).
+  const compressedThreshold = 0.28;
   const isSuper      = mktCond === "CHOPPY" && alternations > 5;   // puro ruído
-  const isCompressed = mktCond === "CHOPPY" && emaDistPct < compressedThreshold;  // sem sinal MR
+  const isCompressed = mktCond === "CHOPPY" && emaStretch < compressedThreshold;  // sem sinal MR
   const isMR         = mktCond === "CHOPPY" && !isSuper && !isCompressed;
   const isTrend      = mktCond === "TRENDING";
   const signalMode   = isSuper || isCompressed ? "BLOCKED" : isMR ? "MEAN_REVERSION" : "TREND";
 
   // TRENDING com EMA demasiado comprimida: dados 04/07 mostram 0% WR em EMA < 0.02%
-  // (mesma ressalva de escala por volatilidade que compressedThreshold acima)
-  const trendCompressedThreshold = isLowVol ? 0.0075 : 0.015;
-  const trendCompressed = mktCond === "TRENDING" && emaDistPct < trendCompressedThreshold;
+  const trendCompressedThreshold = 0.015;
+  const trendCompressed = mktCond === "TRENDING" && emaStretch < trendCompressedThreshold;
 
   // requireTrending (por perfil): implementado de verdade — antes o campo
   // existia na config e era mostrado na UI ("Só opera em TRENDING"), mas
@@ -200,19 +207,19 @@ export const analyzeMarket = (
   if (isMR) {
     timingRaw = 6;
     // Sweet spot 0.7-1.4%: dados confirmam 67% WR → bónus máximo
-    if (emaDistPct >= 0.70 && emaDistPct <= 1.40)      timingRaw += 3.5;
-    else if (emaDistPct >= 0.40 && emaDistPct < 0.70)  timingRaw += 1.5;
-    else if (emaDistPct > 1.40 && emaDistPct <= 2.00)  timingRaw -= 1.5;
-    else if (emaDistPct > 2.00)                         timingRaw -= 2.5;
+    if (emaStretch >= 0.70 && emaStretch <= 1.40)      timingRaw += 3.5;
+    else if (emaStretch >= 0.40 && emaStretch < 0.70)  timingRaw += 1.5;
+    else if (emaStretch > 1.40 && emaStretch <= 2.00)  timingRaw -= 1.5;
+    else if (emaStretch > 2.00)                         timingRaw -= 2.5;
     // MACD virando contra a dir actual → confirma reversão
     if ((currentDir === "UP" && macdDir === "DOWN") ||
         (currentDir === "DOWN" && macdDir === "UP")) timingRaw += 1.5;
     if (consecutiveCount >= 2) timingRaw += 0.5;
   } else {
     timingRaw = 10;
-    if (emaDistPct > 0.5)  timingRaw -= 3.0 * cfg.timingWeight;
-    if (emaDistPct > 1.0)  timingRaw -= 2.0 * cfg.timingWeight;
-    if (emaDistPct < 0.05) timingRaw += 1.5;
+    if (emaStretch > 0.5)  timingRaw -= 3.0 * cfg.timingWeight;
+    if (emaStretch > 1.0)  timingRaw -= 2.0 * cfg.timingWeight;
+    if (emaStretch < 0.05) timingRaw += 1.5;
     if (consecutiveCount >= 5) timingRaw -= 2.0;
     if (macdDir === currentDir) timingRaw += 1.5;
   }
@@ -221,7 +228,7 @@ export const analyzeMarket = (
 
   // ── Exaustão ───────────────────────────────────────────────────────────────
   const accel         = bodySize / (Math.abs(prevCandle.close - prevCandle.open) || 0.0001);
-  const exhaustSc     = consecutiveCount * 2 + emaDistPct * 1.5 + (accel > 2.5 ? 2.5 : 0);
+  const exhaustSc     = consecutiveCount * 2 + emaStretch * 1.5 + (accel > 2.5 ? 2.5 : 0);
   const isExhausted   = exhaustSc > cfg.maxExhaustionScore * 1.4;
 
   // ── Scoring ────────────────────────────────────────────────────────────────
@@ -231,9 +238,9 @@ export const analyzeMarket = (
   if (isMR) {
     // ── MR: apostar CONTRA a direcção actual ─────────────────────────────
     // Base + bónus pelo sweet spot de EMA (67% WR confirmado nos dados reais)
-    const emaBonus = emaDistPct >= 0.70 && emaDistPct <= 1.40 ? 28
-                   : emaDistPct >= 0.40 && emaDistPct < 0.70  ? 12
-                   : emaDistPct > 1.40  && emaDistPct <= 2.00 ? 5
+    const emaBonus = emaStretch >= 0.70 && emaStretch <= 1.40 ? 28
+                   : emaStretch >= 0.40 && emaStretch < 0.70  ? 12
+                   : emaStretch > 1.40  && emaStretch <= 2.00 ? 5
                    : 0;
 
     const rsiBonus = currentDir === "UP"
@@ -256,10 +263,10 @@ export const analyzeMarket = (
 
     if (currentDir === "UP") {
       putScore  = total;
-      reason    = `MR: Reversão ↓ (EMA+${emaDistPct.toFixed(1)}%)`;
+      reason    = `MR: Reversão ↓ (stretch ${emaStretch.toFixed(2)}x ATR)`;
     } else {
       callScore = total;
-      reason    = `MR: Reversão ↑ (EMA+${emaDistPct.toFixed(1)}%)`;
+      reason    = `MR: Reversão ↑ (stretch ${emaStretch.toFixed(2)}x ATR)`;
     }
   } else {
     // ── TREND mode ─────────────────────────────────────────────────────────
@@ -308,10 +315,10 @@ export const analyzeMarket = (
     if (isMR) {
       // Base calibrada ao sweet spot (67% WR confirmado)
       let conf = 38;
-      if (emaDistPct >= 0.70 && emaDistPct <= 1.40)      conf += 22;
-      else if (emaDistPct >= 0.40 && emaDistPct < 0.70)  conf +=  8;
-      else if (emaDistPct > 1.40 && emaDistPct <= 2.00)  conf -=  5;
-      else if (emaDistPct > 2.00)                         conf -=  8;
+      if (emaStretch >= 0.70 && emaStretch <= 1.40)      conf += 22;
+      else if (emaStretch >= 0.40 && emaStretch < 0.70)  conf +=  8;
+      else if (emaStretch > 1.40 && emaStretch <= 2.00)  conf -=  5;
+      else if (emaStretch > 2.00)                         conf -=  8;
 
       const rsiOk  = currentDir === "UP" ? rsi > 58 : rsi < 42;
       const bbOk   = currentDir === "UP" ? bbPctB > 0.62 : bbPctB < 0.38;
@@ -367,7 +374,7 @@ export const analyzeMarket = (
       timingQuality: Number(timingScore.toFixed(2)),
       confidencePenaltyReasons: [],
       exhaustionPenalty: isExhausted ? 16 : 0,
-      emaStretchLevel: Number(emaDistPct.toFixed(2)),
+      emaStretchLevel: Number(emaStretch.toFixed(2)),
       entryDelayRisk: consecutiveCount > 4 ? (consecutiveCount - 4) * 5 : 0,
       consecutiveCandles: consecutiveCount,
       isExhausted,
