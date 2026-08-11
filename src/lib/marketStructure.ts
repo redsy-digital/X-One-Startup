@@ -66,7 +66,10 @@ export function evaluateStructure(
     shouldReset = true;
     resetReason = "Mudança de Direção Dominante";
   } else if (newDir === "UP") {
-    const redCount = last5.filter((c) => c.close < c.open).length;
+    // redCount usava close<open dentro do candle — sempre falso em candles
+    // de 1 tick (open===close sempre nesse caso), desativando silenciosamente
+    // este reset. Corrigido: close deste candle vs o anterior.
+    const redCount = last5.filter((c, i) => i > 0 && c.close < last5[i - 1].close).length;
     if (redCount >= 3) {
       shouldReset = true;
       resetReason = "Pullback Estrutural (3+ Red)";
@@ -75,7 +78,8 @@ export function evaluateStructure(
       resetReason = "Quebra de Suporte (EMA Slow)";
     }
   } else if (newDir === "DOWN") {
-    const greenCount = last5.filter((c) => c.close > c.open).length;
+    // Mesma correção que redCount acima (close-a-close, não close-vs-open).
+    const greenCount = last5.filter((c, i) => i > 0 && c.close > last5[i - 1].close).length;
     if (greenCount >= 3) {
       shouldReset = true;
       resetReason = "Pullback Estrutural (3+ Green)";

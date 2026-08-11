@@ -102,8 +102,18 @@ export const analyzeMarket = (
 
   const lastClose  = lastCandle.close;
   const lastOpen   = lastCandle.open;
-  const bodySize   = Math.abs(lastClose - lastOpen);
-  const avgBody    = candles.slice(-20).reduce((a, c) => a + Math.abs(c.close - c.open), 0) / 20;
+  // bodySize/avgBody usavam close-vs-open DENTRO do candle — sempre zero em
+  // candles de 1 tick (open===close sempre nesse caso). Redefinido como
+  // close-a-close entre candles consecutivos: é o único "corpo" que existe
+  // de facto quando cada candle é um único tick, e continua a fazer sentido
+  // em candles multi-tick (fica parecido com o antigo, quando open≠close).
+  const bodySize   = Math.abs(lastClose - prevCandle.close);
+  const avgBody    = (() => {
+    const recent = candles.slice(-21);
+    let sum = 0;
+    for (let i = 1; i < recent.length; i++) sum += Math.abs(recent[i].close - recent[i - 1].close);
+    return recent.length > 1 ? sum / (recent.length - 1) : 0;
+  })();
   const bbWidth    = (bb.upper - bb.lower) || 0.0001;
   const bbPctB     = (lastClose - bb.lower) / bbWidth;
   const macdHist   = macd.histogram;
@@ -126,21 +136,32 @@ export const analyzeMarket = (
   // utilizador (reason, emaStretchLevel) — nunca mais é usado em limiar.
   const atrPct       = (atr / (lastClose || 1)) * 100;
   const emaStretch   = atrPct > 0 ? emaDistPct / atrPct : 0;
-  const currentDir   = lastClose >= lastOpen ? "UP" : "DOWN";
+  // currentDir tinha o mesmo bug (lastClose >= lastOpen, sempre "UP" em
+  // candles de 1 tick já que open===close sempre) — corrigido para close
+  // deste candle vs close do anterior, coerente com o resto desta correção.
+  const currentDir   = lastClose >= prevCandle.close ? "UP" : "DOWN";
   const macdDir      = macdHist > 0 ? "UP" : "DOWN";
 
+  // consecutiveCount/alternations usavam close-vs-open DENTRO do candle —
+  // sempre "NEUTRAL"/false em candles de 1 tick, o que fazia o loop de
+  // consecutiveCount nunca parar (contava até ao início do array — valores
+  // de milhares, alimentando exhaustSc muito acima de qualquer limiar
+  // razoável) e alternations ficar sempre 0. Mesma correção: close-a-close
+  // entre candles consecutivos.
   let consecutiveCount = 0;
-  for (let i = candles.length - 1; i >= 0; i--) {
-    const c = candles[i];
-    const d = c.close > c.open ? "UP" : c.close < c.open ? "DOWN" : "NEUTRAL";
+  for (let i = candles.length - 1; i > 0; i--) {
+    const c = candles[i], prev = candles[i - 1];
+    const d = c.close > prev.close ? "UP" : c.close < prev.close ? "DOWN" : "NEUTRAL";
     if (d === currentDir || d === "NEUTRAL") consecutiveCount++;
     else break;
   }
 
-  const last8        = candles.slice(-8);
-  const alternations = last8.filter(
-    (c, i) => i > 0 && (c.close > c.open) !== (last8[i-1].close > last8[i-1].open)
-  ).length;
+  const last9 = candles.slice(-9);
+  const dirs9: ("UP" | "DOWN")[] = [];
+  for (let i = 1; i < last9.length; i++) {
+    dirs9.push(last9[i].close >= last9[i - 1].close ? "UP" : "DOWN");
+  }
+  const alternations = dirs9.filter((d, i) => i > 0 && d !== dirs9[i - 1]).length;
 
   // ── Condição de mercado ────────────────────────────────────────────────────
   const adxStrong    = adx > adxThreshold;
@@ -182,22 +203,33 @@ export const analyzeMarket = (
   }
 
   // ── Freshness (candles COMPLETOS, não o actual em formação) ────────────────
-  const completed = candles.slice(-11, -1).filter(c => c.close !== c.open);
+  // Direcção de cada candle = close deste vs close do anterior (não
+  // open-vs-close do próprio candle). Em candles de 1 tick (comum a 1s
+  // nativo — cada candle É um tick, logo close sempre igual a open), a
+  // versão antiga (`c.close !== c.open`) descartava literalmente todos os
+  // candles, deixando "completed" sempre vazio: MR ficava sempre no piso
+  // (freshness=0, sempre bloqueado) e TREND sempre no tecto (freshness=10,
+  // nunca bloqueado por isto) — explica porque só TREND gerava trades reais
+  // em dados de 1s, mesmo com MR a passar pela pontuação.
+  const recentCloses = candles.slice(-12, -1).map(c => c.close);
+  const completed: ("UP" | "DOWN")[] = [];
+  for (let i = 1; i < recentCloses.length; i++) {
+    if (recentCloses[i] > recentCloses[i - 1]) completed.push("UP");
+    else if (recentCloses[i] < recentCloses[i - 1]) completed.push("DOWN");
+    // preço genuinamente igual entre os dois — não conta para nenhum lado
+  }
   let trendFreshnessScore: number;
 
   if (isMR) {
-    // MR: quantas das 10 últimas completadas foram na direcção actual?
+    // MR: quantas das últimas completadas foram na direcção actual?
     // Mais na mesma direcção = mais sobreextendido = setup MR mais forte
-    const sameDir = completed.filter(c =>
-      currentDir === "UP" ? c.close > c.open : c.close < c.open
-    ).length;
+    const sameDir = completed.filter(d => d === currentDir).length;
     trendFreshnessScore = Math.min(10, sameDir * 1.4);
   } else {
     // TREND: contar consecutivos na direcção actual (penalizar entradas tardias)
     let consec = 0;
     for (let i = completed.length - 1; i >= 0; i--) {
-      const d = completed[i].close > completed[i].open ? "UP" : "DOWN";
-      if (d === currentDir) consec++; else break;
+      if (completed[i] === currentDir) consec++; else break;
     }
     trendFreshnessScore = Math.max(0, 10 - consec * 1.5 * cfg.freshnessWeight);
   }
@@ -227,7 +259,12 @@ export const analyzeMarket = (
   const lateEntry   = isTrend && timingScore < 4;
 
   // ── Exaustão ───────────────────────────────────────────────────────────────
-  const accel         = bodySize / (Math.abs(prevCandle.close - prevCandle.open) || 0.0001);
+  // accel usava prevCandle.close-prevCandle.open (sempre zero em 1 tick).
+  // Corrigido: compara o "corpo" deste candle (bodySize, já close-a-close)
+  // com o do candle anterior (close dele vs o candle antes desse).
+  const prevPrevCandle = candles[candles.length - 3];
+  const prevBodySize   = prevPrevCandle ? Math.abs(prevCandle.close - prevPrevCandle.close) : 0;
+  const accel          = bodySize / (prevBodySize || 0.0001);
   const exhaustSc     = consecutiveCount * 2 + emaStretch * 1.5 + (accel > 2.5 ? 2.5 : 0);
   const isExhausted   = exhaustSc > cfg.maxExhaustionScore * 1.4;
 
@@ -310,48 +347,25 @@ export const analyzeMarket = (
   }
 
   // ── Confiança ──────────────────────────────────────────────────────────────
-  let confidence = 0;
-  if (type !== "NEUTRAL") {
-    if (isMR) {
-      // Base calibrada ao sweet spot (67% WR confirmado)
-      let conf = 38;
-      if (emaStretch >= 0.70 && emaStretch <= 1.40)      conf += 22;
-      else if (emaStretch >= 0.40 && emaStretch < 0.70)  conf +=  8;
-      else if (emaStretch > 1.40 && emaStretch <= 2.00)  conf -=  5;
-      else if (emaStretch > 2.00)                         conf -=  8;
-
-      const rsiOk  = currentDir === "UP" ? rsi > 58 : rsi < 42;
-      const bbOk   = currentDir === "UP" ? bbPctB > 0.62 : bbPctB < 0.38;
-      const macdOk = (currentDir === "UP" && macdHist < 0) || (currentDir === "DOWN" && macdHist > 0);
-
-      if (rsiOk)                 conf +=  8;
-      if (bbOk)                  conf +=  7;
-      if (macdOk && macdStrong)  conf +=  8;
-      else if (macdOk)           conf +=  4;
-      if (trendFreshnessScore > 5) conf += 4;
-      if (timingScore >= 9)      conf +=  5;
-      else if (timingScore < 6)  conf -=  6;
-      if (consecutiveCount >= 3) conf +=  3;
-
-      confidence = Math.max(0, Math.min(95, Math.round(conf)));
-    } else {
-      // TREND confidence — calibrada para zona alvo 50-70%
-      // Dados 04/07: conf 50-59% → 64% WR; conf 40-49% → 24% WR
-      const dom = type === "CALL" ? callScore : putScore;
-      let conf = Math.min(55, (dom / 130) * 55); // base ligeiramente mais alta
-      if (adx > 30)                                  conf += 10;
-      else if (adx > 25)                             conf +=  5;
-      if (macdStrong && macdDir === currentDir)      conf +=  8;
-      else if (macdDir === currentDir)               conf +=  3;
-      if (diSep && adxStrong)                        conf +=  5; // tendência confirmada por DI
-      if (trendFreshnessScore > 6)                   conf +=  5;
-      else if (trendFreshnessScore < 4)              conf -=  8;
-      if (timingScore > 7)                           conf +=  4;
-      else if (timingScore < 4)                      conf -= 10;
-      if (lateEntry)                                 conf -=  8;
-      confidence = Math.max(0, Math.min(95, Math.round(conf)));
-    }
-  }
+  // Confiança = taxa de acerto REAL validada por modo, não uma fórmula de
+  // bónus por feature. Testámos formalmente (separação treino/validação
+  // cronológica, nunca misturando dados de validação no ajuste): nem o score
+  // agregado nem nenhuma feature individual (RSI, ADX, timing, freshness,
+  // exaustão, força do candle, etc.) previu resultado de forma que se
+  // mantivesse fora da amostra de treino — a correlação mais forte fora da
+  // amostra foi 0.077 (candleStrength, TREND), fraca demais para servir de
+  // base a um número por trade. A fórmula anterior (bónus por feature,
+  // calibrada à mão numa sessão de poucos trades) media bem no treino e não
+  // se sustentava em dados nunca vistos — exactamente o padrão de
+  // overfitting que a validação existe para apanhar.
+  // Medido em 2836 trades de validação (7 símbolos, 1s, 09/08/2026, já com
+  // os bugs de candle de 1 tick desta sessão corrigidos):
+  // MR 50.11% (n=2369, ±2.0pp a 95%) · TREND 49.68% (n=467, ±4.5pp a 95%).
+  // Reflecte o estado real medido — actualizar quando houver mais dados
+  // (ex.: depois da fase de gestão de risco/novos mercados).
+  const VALIDATED_WIN_RATE_MR = 50.11;
+  const VALIDATED_WIN_RATE_TREND = 49.68;
+  const confidence = type === "NEUTRAL" ? 0 : Math.round(isMR ? VALIDATED_WIN_RATE_MR : VALIDATED_WIN_RATE_TREND);
 
   // ── Output ─────────────────────────────────────────────────────────────────
   return {
@@ -365,7 +379,7 @@ export const analyzeMarket = (
       callScore, putScore,
       scoreDiff: Math.abs(callScore - putScore),
       candleStrength: Number((bodySize / (avgBody || 0.0001)).toFixed(2)),
-      lastCandlesDirection: last8.map(c => c.close > c.open ? "UP" : "DOWN"),
+      lastCandlesDirection: dirs9,
       reason: `[${signalMode}] ${type === "NEUTRAL" ? (blockedReason || reason) : reason}`,
       exhaustionScore: Number(exhaustSc.toFixed(2)),
       trendFreshnessScore: Number(trendFreshnessScore.toFixed(2)),
