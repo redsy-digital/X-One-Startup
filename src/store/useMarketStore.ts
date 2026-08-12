@@ -20,7 +20,12 @@ interface MarketState {
 }
 
 export const useMarketStore = create<MarketState>((set) => ({
-  symbol: "R_100",
+  // 1HZ100V: maior win rate validado (52.0%, n=867) nos 7 símbolos testados
+  // com dados reais de 1s (09/08/2026) — ver /areas ou histórico do chat
+  // para o comparativo completo. Estatisticamente empatado com R_50
+  // (51.9%, n=1633, amostra maior) — o R_50 é a alternativa mais robusta
+  // se preferires priorizar tamanho de amostra sobre o número mais alto.
+  symbol: "1HZ100V",
   timeframe: 1,
   ticks: [],
   candles: [],

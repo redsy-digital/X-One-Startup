@@ -127,7 +127,7 @@ const AcertosModal = ({ onClose }: { onClose: () => void }) => {
             </div>
           </div>
           <div className="grid grid-cols-2 gap-3">
-            {row("Stake Base ($)", "stake", "0.01", 0.01)}
+            {row("Stake Base ($)", "stake", "0.01", 0.35)}
             {row("Take Profit ($)", "targetProfit", "0.5", 0.01)}
             {row("Stop Loss ($)", "stopLoss", "0.5", 0.01)}
             {row("Conf. Mínima (%)", "minConfidence", "1", 0, 100)}

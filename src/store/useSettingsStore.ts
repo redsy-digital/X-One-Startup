@@ -25,10 +25,27 @@ export interface BotSettings {
 }
 
 export const DEFAULT_SETTINGS: BotSettings = {
-  stake: 1,
-  targetProfit: 10,
-  stopLoss: 12, // compatível com 3 steps Martingale: acumulado máx $7.51
-  minConfidence: 50, // dados 04/07: conf 50-59% → 64% WR; conf 40-49% → 24% WR
+  // $0.35 = mínimo real da Deriv para opções em Índices Sintéticos
+  // (confirmado na comunidade oficial Deriv, 11/08/2026) — abaixo disso a
+  // proposta é rejeitada pela API.
+  stake: 0.35,
+  targetProfit: 3.5,
+  // $6.00 ≈ 1 ciclo completo do Martingale (3 passos, 2.1x, stake $0.35 =
+  // $5.87 acumulado) + margem pequena — dimensionado por simulação Monte
+  // Carlo (20.000 sessões, bootstrap de sequências reais de 7 símbolos,
+  // 11/08/2026): SL mais apertado (~$4.20, proporcional ao valor antigo)
+  // cortava recuperações a meio do ciclo com mais frequência, sem reduzir
+  // o pior caso proporcionalmente — pior mediana E pior taxa de Take
+  // Profit ao mesmo tempo. $6.00 deu a melhor taxa de TP (62.3% vs 54.9%)
+  // com mediana ainda positiva; troca-se por um pior caso maior mas mais
+  // previsível (menos surpresa de SL nominal vs real).
+  stopLoss: 6.0,
+  // 50 ≈ a taxa validada dos dois modos hoje (MR 50.11%, TREND 49.68%,
+  // ver strategy.ts) — na prática deixa passar quase tudo, já que a
+  // confiança deixou de ser um score gradual por trade (ver correcção da
+  // fórmula de confiança, 09/08/2026). Ajusta aqui se um dos modos vier a
+  // validar melhor que o outro no futuro.
+  minConfidence: 50,
   cooldownSeconds: 10, // aumentado: dados mostram clusters de 3 trades em 11s → entradas correlacionadas
   strategyProfile: "balanced",
   useMartingale: true,
