@@ -7,11 +7,18 @@ import { TickData, Candle } from "../types";
 const MAX_CANDLES = 1000;
 
 interface MarketState {
+  // null = ainda não escolhido nesta sessão (mostra o ecrã de escolha).
+  // Reinicia a null em cada carregamento de página, de propósito — força
+  // uma escolha consciente em vez de assumir silenciosamente o último
+  // mercado usado, dado que os defaults (stake, risco, duração) diferem
+  // muito entre eles.
+  market: "synthetic" | "forex" | null;
   symbol: string;
   timeframe: number;
   ticks: TickData[];
   candles: Candle[];
 
+  setMarket: (market: "synthetic" | "forex" | null) => void;
   setSymbol: (symbol: string) => void;
   setTimeframe: (tf: number) => void;
   addTick: (tick: TickData) => void;
@@ -20,6 +27,8 @@ interface MarketState {
 }
 
 export const useMarketStore = create<MarketState>((set) => ({
+  market: null,
+
   // 1HZ100V: maior win rate validado (52.0%, n=867) nos 7 símbolos testados
   // com dados reais de 1s (09/08/2026) — ver /areas ou histórico do chat
   // para o comparativo completo. Estatisticamente empatado com R_50
@@ -29,6 +38,8 @@ export const useMarketStore = create<MarketState>((set) => ({
   timeframe: 1,
   ticks: [],
   candles: [],
+
+  setMarket: (market) => set({ market, ticks: [], candles: [] }),
 
   setSymbol: (symbol) => set({ symbol, ticks: [], candles: [] }),
 

@@ -16,6 +16,8 @@ import {
 } from "../components/ui/select";
 import { TradingChart } from "../components/TradingChart";
 import { ErrorBoundary } from "../components/ErrorBoundary";
+import { MarketSelectScreen } from "../components/MarketSelectScreen";
+import { ForexDashboardPlaceholder } from "../components/ForexDashboardPlaceholder";
 import { SYMBOLS } from "../constants";
 import { logger, LogEntry } from "../lib/logger";
 import { getTradeHistory } from "../lib/storage";
@@ -189,7 +191,7 @@ export const DashboardPage = () => {
   const navigate = useNavigate();
   const { isAuthorized, activeAccount } = useConnectionStore();
   const { isBotRunning, setIsBotRunning, lossCooldown, sessionStartedAt, sessionFrozenElapsed } = useBotStore();
-  const { symbol, setSymbol, candles, ticks, timeframe, setTimeframe } = useMarketStore();
+  const { market, setMarket, symbol, setSymbol, candles, ticks, timeframe, setTimeframe } = useMarketStore();
   const { settings } = useSettingsStore();
   const { lastSignal } = useSignalStore();
   const { wins, losses, consecutiveLosses, pnl: rawPnl, modal, closeModal } = useSessionStore();
@@ -243,8 +245,29 @@ export const DashboardPage = () => {
     trade: "text-emerald-400", risk: "text-orange-400", error: "text-red-400"
   };
 
+  // Fase 1 do plano multi-mercado — ver forex_ux_architecture.md.
+  // Mercado ainda não escolhido nesta sessão: mostra o selector em vez do
+  // dashboard. Nenhum destes dois ramos toca no motor de trading nem no
+  // resto da página abaixo — o dashboard de sintéticos continua exactamente
+  // como sempre esteve quando market === "synthetic".
+  if (market === null) return <MarketSelectScreen />;
+  if (market === "forex") return <ForexDashboardPlaceholder />;
+
   return (
     <>
+      {/* Fase 1 multi-mercado: trocar só permitido com o bot parado — mesma
+          regra já usada para "Baixar histórico real" no BacktestPanel. */}
+      <div className="flex justify-end mb-2">
+        <button
+          onClick={() => !isBotRunning && setMarket(null)}
+          disabled={isBotRunning}
+          title={isBotRunning ? "Pára o bot para trocar de mercado" : "Trocar de mercado"}
+          className="text-[9px] font-black uppercase tracking-wide text-muted-foreground/60 hover:text-purple-400 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+        >
+          ⇄ Trocar mercado
+        </button>
+      </div>
+
       {/* Fix 1: Layout 2 colunas desktop — usa grid com larguras fixas */}
       <div className="grid grid-cols-1 lg:grid-cols-[300px_1fr] gap-4">
 

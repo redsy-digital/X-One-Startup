@@ -23,7 +23,7 @@ import { logger } from "../lib/logger";
 export const TradingEngineRunner = () => {
   const { isAuthorized, isDemo, balance } = useConnectionStore();
   const { isBotRunning, setIsBotRunning } = useBotStore();
-  const { symbol, candles } = useMarketStore();
+  const { symbol, candles, market } = useMarketStore();
   const { settings } = useSettingsStore();
   const {
     stake, targetProfit, stopLoss, minConfidence, cooldownSeconds, contractDurationTicks,
@@ -72,7 +72,13 @@ export const TradingEngineRunner = () => {
       currentStake: riskState.currentStake,
       stake, minConfidence, cooldownSeconds, contractDurationTicks,
       strategyProfile, maxConsecutiveLosses, cooldownAfterLoss,
-      isBotRunning, isAuthorized,
+      // Guarda do Fase 1 do plano multi-mercado: strategy.ts/SYMBOLS são
+      // específicos de Índices Sintéticos. Mesmo que isBotRunning fique
+      // true por algum motivo fora deste ecrã, o motor nunca dispara um
+      // trade fora de market==="synthetic" — não há motor de Forex real
+      // ainda (ver forex_ux_architecture.md, Fase 2+).
+      isBotRunning: isBotRunning && market === "synthetic",
+      isAuthorized,
       onWin: riskActions.onWin,
       onLoss: riskActions.onLoss,
       onForceStop: (reason: string) => {
