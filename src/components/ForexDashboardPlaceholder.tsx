@@ -1,12 +1,13 @@
 import React from "react";
 import { Construction, ArrowLeft } from "lucide-react";
 import { useMarketStore } from "../store";
+import { ForexDiagnostics } from "./ForexDiagnostics";
 
-// Fase 1 do plano multi-mercado: só o selector + tema existem ainda.
-// O motor de decisão de Forex (indicadores, estrutura, macro, risco) é
-// construído nas fases seguintes — ver forex_ux_architecture.md e
-// forex_feature_inventory.md para o plano completo. Este placeholder
-// existe para o tema/fluxo poderem ser testados já, sem fingir que há
+// Fase 1 (selector + tema) + Fase 2 (diagnóstico de dados reais) do plano
+// multi-mercado. O motor de decisão de Forex em si (indicadores, estrutura,
+// macro, risco) ainda não existe — ver forex_ux_architecture.md e
+// forex_feature_inventory.md para o plano completo. Este placeholder existe
+// para o tema/fluxo/dados poderem ser testados já, sem fingir que há
 // negociação real a acontecer.
 export const ForexDashboardPlaceholder = () => {
   const { setMarket } = useMarketStore();
@@ -26,6 +27,8 @@ export const ForexDashboardPlaceholder = () => {
           continuam totalmente operacionais.
         </p>
       </div>
+      <ForexDiagnostics />
+
       <button
         onClick={() => setMarket(null)}
         className="flex items-center gap-2 px-4 py-2 rounded-xl border border-emerald-500/30 text-emerald-400 text-[11px] font-black uppercase tracking-wide hover:bg-emerald-500/10 transition-colors"

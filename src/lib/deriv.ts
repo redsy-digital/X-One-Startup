@@ -179,6 +179,29 @@ export class DerivService {
     this.send({ proposal_open_contract: 1, subscribe: 1 });
   }
 
+  /**
+   * Fase 2 do plano multi-mercado — pede os contratos disponíveis para um
+   * símbolo (tipos de contrato, duração mín/máx por tipo, etc.). É a única
+   * forma fiável de confirmar os limites reais de Forex (ex.: frxEURUSD)
+   * em vez de assumir a partir da documentação genérica.
+   * Resposta chega com msg_type "contracts_for" — ouvir via
+   * derivService.on("contracts_for", ...). Não precisa de autorização
+   * (chamada pública), mas precisa de socket aberto.
+   */
+  getContractsFor(symbol: string, currency: string = "USD") {
+    this.send({ contracts_for: symbol, currency });
+  }
+
+  /**
+   * Fase 2 — lista os símbolos negociáveis disponíveis para a conta ligada
+   * (inclui Forex, com o mesmo campo `market: "forex"`). Útil para
+   * confirmar o nome exacto/pip size dos pares antes de os usar.
+   * Resposta chega com msg_type "active_symbols".
+   */
+  getActiveSymbols(productType: "basic" | "multipliers" = "basic") {
+    this.send({ active_symbols: "full", product_type: productType });
+  }
+
   async fetchAccounts(): Promise<any[]> {
     if (!this.pat) throw new Error("[Deriv] No PAT set");
 
