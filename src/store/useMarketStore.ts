@@ -39,13 +39,7 @@ export const useMarketStore = create<MarketState>((set) => ({
   ticks: [],
   candles: [],
 
-  setMarket: (market) => set(() => ({
-    market,
-    symbol: market === "forex" ? "frxEURUSD" : "1HZ100V",
-    timeframe: market === "forex" ? 60 : 1,
-    ticks: [],
-    candles: [],
-  })),
+  setMarket: (market) => set({ market, ticks: [], candles: [] }),
 
   setSymbol: (symbol) => set({ symbol, ticks: [], candles: [] }),
 

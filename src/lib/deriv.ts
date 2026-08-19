@@ -23,8 +23,6 @@ export class DerivService {
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private reconnectAttempts = 0;
   private readonly MAX_RECONNECT = 5;
-  private requestSeq = 1000;
-  private pendingRequests = new Map<number, { resolve: (data: any) => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> }>();
 
   // Epoch: garante que apenas a conexão mais recente processa eventos
   private _epoch = 0;
@@ -63,11 +61,6 @@ export class DerivService {
     this._epoch++; // invalida todas as tentativas em curso
     this._clearReconnectTimer();
     this._closeSocket();
-    this.pendingRequests.forEach(({ reject, timer }) => {
-      clearTimeout(timer);
-      reject(new Error("Ligação Deriv encerrada."));
-    });
-    this.pendingRequests.clear();
     this.reconnectAttempts = 0;
   }
 
@@ -77,54 +70,6 @@ export class DerivService {
     } else {
       console.warn("[Deriv] Cannot send — socket not open:", Object.keys(data)[0]);
     }
-  }
-
-  /** New API request/response helper. Uses req_id; echo_req is optional in New API. */
-  private request<T = any>(payload: Record<string, any>, msgType: string, timeoutMs = 15000): Promise<T> {
-    if (!this.isSocketOpen()) return Promise.reject(new Error("WebSocket Deriv não está ligado."));
-    const req_id = ++this.requestSeq;
-    return new Promise<T>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.pendingRequests.delete(req_id);
-        reject(new Error(`Timeout à espera de ${msgType} (req_id ${req_id}).`));
-      }, timeoutMs);
-      this.pendingRequests.set(req_id, { resolve, reject, timer });
-      this.socket!.send(JSON.stringify({ ...payload, req_id }));
-    });
-  }
-
-  /** New API: lista de símbolos activos. */
-  async getActiveSymbols(contractType?: string[]) {
-    const data = await this.request<any>(
-      { active_symbols: "brief", ...(contractType?.length ? { contract_type: contractType } : {}) },
-      "active_symbols"
-    );
-    if (data.error) throw new Error(data.error.message || "Erro em active_symbols");
-    return Array.isArray(data.active_symbols) ? data.active_symbols : [];
-  }
-
-  /** New API: contratos disponíveis para um símbolo. */
-  async getContractsFor(symbol: string) {
-    const data = await this.request<any>({ contracts_for: symbol }, "contracts_for");
-    if (data.error) throw new Error(data.error.message || "Erro em contracts_for");
-    return data.contracts_for ?? { available: [], hit_count: 0 };
-  }
-
-  /** New API: proposta de preço sem comprar. Usado apenas para validar capacidades. */
-  async probeProposal(
-    symbol: string,
-    contractType: "CALL" | "PUT" | "HIGHER" | "LOWER",
-    amount: number,
-    duration: number,
-    durationUnit: "s" | "m" | "h" = "m",
-    currency = "USD"
-  ) {
-    const data = await this.request<any>({
-      proposal: 1, amount, basis: "stake", contract_type: contractType, currency,
-      duration, duration_unit: durationUnit, underlying_symbol: symbol,
-    }, "proposal");
-    if (data.error) throw new Error(data.error.message || "Erro em proposal");
-    return data.proposal;
   }
 
   /** Verifica se o socket está realmente aberto e pronto para enviar pedidos. */
@@ -232,6 +177,29 @@ export class DerivService {
 
   subscribeProposalOpenContract() {
     this.send({ proposal_open_contract: 1, subscribe: 1 });
+  }
+
+  /**
+   * Fase 2 do plano multi-mercado — pede os contratos disponíveis para um
+   * símbolo (tipos de contrato, duração mín/máx por tipo, etc.). É a única
+   * forma fiável de confirmar os limites reais de Forex (ex.: frxEURUSD)
+   * em vez de assumir a partir da documentação genérica.
+   * Resposta chega com msg_type "contracts_for" — ouvir via
+   * derivService.on("contracts_for", ...). Não precisa de autorização
+   * (chamada pública), mas precisa de socket aberto.
+   */
+  getContractsFor(symbol: string, currency: string = "USD") {
+    this.send({ contracts_for: symbol, currency });
+  }
+
+  /**
+   * Fase 2 — lista os símbolos negociáveis disponíveis para a conta ligada
+   * (inclui Forex, com o mesmo campo `market: "forex"`). Útil para
+   * confirmar o nome exacto/pip size dos pares antes de os usar.
+   * Resposta chega com msg_type "active_symbols".
+   */
+  getActiveSymbols(productType: "basic" | "multipliers" = "basic") {
+    this.send({ active_symbols: "full", product_type: productType });
   }
 
   async fetchAccounts(): Promise<any[]> {
@@ -349,15 +317,6 @@ export class DerivService {
         const data = JSON.parse(event.data) as DerivMessage;
         if (this._debugLogAll) {
           logger.system(`[Debug] Recebido: msg_type=${data.msg_type ?? "(nenhum)"} ${data.error ? `| error=${data.error.message}` : ""}`);
-        }
-        if (data.req_id !== undefined) {
-          const pending = this.pendingRequests.get(Number(data.req_id));
-          if (pending) {
-            clearTimeout(pending.timer);
-            this.pendingRequests.delete(Number(data.req_id));
-            if (data.error) pending.reject(new Error(data.error.message || `Deriv API error (${data.error.code || "unknown"})`));
-            else pending.resolve(data);
-          }
         }
         if (data.msg_type) this._emit(data.msg_type, data);
       } catch (e) {
