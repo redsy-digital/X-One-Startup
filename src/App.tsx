@@ -235,10 +235,7 @@ export default function App() {
         setBalance(data.authorize.balance);
         derivService.subscribeProposalOpenContract();
         derivService.send({ balance: 1, subscribe: 1 });
-        // Iniciar feed de ticks + pré-carregar 500 candles históricos
-        const { symbol, timeframe } = useMarketStore.getState();
-        derivService.subscribeTicks(symbol);
-        derivService.requestTicksHistory(symbol, 500, timeframe);
+        // O feed inicial é configurado pelo efeito market/symbol/timeframe abaixo.
       } else {
         logger.error(`Auth Deriv: ${data.error.message}`);
       }
@@ -247,16 +244,34 @@ export default function App() {
     return () => { unsubTick(); unsubBalance(); unsubPOC(); unsubCandles(); unsubAuth(); };
   }, []);
 
-  // Re-subscrever ticks + buscar histórico quando símbolo muda
-  const { symbol } = useMarketStore();
+  // Feed de mercado — derivado do mercado/símbolo/timeframe actual.
+  // Forex usa frxEURUSD + M1 por defeito nesta Fase 2; continua sem execução.
+  const { market, symbol, timeframe } = useMarketStore();
   const isAuthorizedRef = React.useRef(false);
   useEffect(() => { isAuthorizedRef.current = isAuthorized; }, [isAuthorized]);
   useEffect(() => {
-    if (!isAuthorizedRef.current) return;
+    if (!isAuthorizedRef.current || !market) return;
     derivService.unsubscribeTicks(symbol);
     derivService.subscribeTicks(symbol);
-    derivService.requestTicksHistory(symbol, 500, 1);
-  }, [symbol]);
+    derivService.requestTicksHistory(symbol, 500, market === "forex" ? Math.max(60, timeframe) : timeframe);
+
+    if (market === "forex") {
+      derivService.getActiveSymbols(["CALL", "PUT"])
+        .then((symbols) => {
+          const eurusd = symbols.find((item: any) => item.underlying_symbol === "frxEURUSD");
+          if (eurusd) logger.system(`✓ New API | Forex ${eurusd.underlying_symbol_name} | pip_size=${eurusd.pip_size} | open=${eurusd.exchange_is_open}`);
+          else logger.error("New API: frxEURUSD não apareceu em active_symbols.");
+        })
+        .catch((error: any) => logger.error(`New API active_symbols: ${error.message}`));
+      derivService.getContractsFor("frxEURUSD")
+        .then((result) => {
+          const contracts = (result.available ?? []).map((c: any) => c.contract_type).filter(Boolean);
+          logger.system(`✓ New API | frxEURUSD contracts_for: ${contracts.join(", ") || "nenhum"}`);
+        })
+        .catch((error: any) => logger.error(`New API contracts_for: ${error.message}`));
+    }
+    return () => { derivService.unsubscribeTicks(symbol); };
+  }, [market, symbol, timeframe]);
 
   // Carregar histórico quando user autentica
   useEffect(() => {
