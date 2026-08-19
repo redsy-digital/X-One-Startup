@@ -187,9 +187,14 @@ export class DerivService {
    * Resposta chega com msg_type "contracts_for" — ouvir via
    * derivService.on("contracts_for", ...). Não precisa de autorização
    * (chamada pública), mas precisa de socket aberto.
+   *
+   * NOTA (18/08/2026): tinha um campo `currency` aqui — a API rejeitou ao
+   * vivo com "Properties not allowed: currency." Faz sentido: tipos de
+   * contrato e duração não dependem de moeda (isso é só relevante para
+   * `proposal`, que já não muda). Testado e confirmado sem o campo.
    */
-  getContractsFor(symbol: string, currency: string = "USD") {
-    this.send({ contracts_for: symbol, currency });
+  getContractsFor(symbol: string) {
+    this.send({ contracts_for: symbol });
   }
 
   /**
