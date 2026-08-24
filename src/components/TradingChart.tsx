@@ -37,6 +37,8 @@ const TradingChartInner = ({ candles, symbol }: TradingChartProps) => {
   const emaFastRef = useRef<ISeriesApi<"Line"> | null>(null);
   const emaSlowRef = useRef<ISeriesApi<"Line"> | null>(null);
   const prevLengthRef = useRef(0);
+  const prevFirstTimeRef = useRef<number | null>(null);
+  const prevLastTimeRef = useRef<number | null>(null);
 
   // ── Criar chart na montagem ───────────────────────────────────────────────
   useEffect(() => {
@@ -132,12 +134,27 @@ const TradingChartInner = ({ candles, symbol }: TradingChartProps) => {
 
   // ── Actualizar dados dos candles ──────────────────────────────────────────
   useEffect(() => {
-    if (!candleSeriesRef.current || candles.length === 0) return;
+    if (!candleSeriesRef.current) return;
+    if (candles.length === 0) {
+      prevLengthRef.current = 0;
+      prevFirstTimeRef.current = null;
+      prevLastTimeRef.current = null;
+      candleSeriesRef.current.setData([]);
+      emaFastRef.current?.setData([]);
+      emaSlowRef.current?.setData([]);
+      return;
+    }
 
-    const isReset = candles.length < prevLengthRef.current;
+    const firstTime = candles[0]?.time ?? null;
+    const lastTime = candles[candles.length - 1]?.time ?? null;
+    const timeframeChanged =
+      prevFirstTimeRef.current !== null &&
+      firstTime !== null &&
+      prevFirstTimeRef.current !== firstTime;
+    const datasetReset = timeframeChanged || candles.length < prevLengthRef.current;
     const isInitial = prevLengthRef.current === 0;
 
-    if (isReset || isInitial) {
+    if (datasetReset || isInitial) {
       // Full reload
       const data: CandlestickData[] = candles.map((c) => ({
         time: c.time as UTCTimestamp,
@@ -160,6 +177,8 @@ const TradingChartInner = ({ candles, symbol }: TradingChartProps) => {
     }
 
     prevLengthRef.current = candles.length;
+    prevFirstTimeRef.current = firstTime;
+    prevLastTimeRef.current = lastTime;
   }, [candles]);
 
   // ── Actualizar EMAs ───────────────────────────────────────────────────────
@@ -204,7 +223,7 @@ const TradingChartInner = ({ candles, symbol }: TradingChartProps) => {
       {candles.length < 10 && (
         <div className="absolute inset-0 flex items-center justify-center">
           <p className="text-[11px] text-muted-foreground font-bold uppercase tracking-widest animate-pulse">
-            A acumular candles... ({candles.length}/10)
+            A carregar histórico... ({candles.length})
           </p>
         </div>
       )}

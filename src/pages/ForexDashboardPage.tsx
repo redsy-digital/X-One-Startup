@@ -4,7 +4,7 @@ import {
   Activity, AlertTriangle, ArrowDownRight, ArrowUpRight, BarChart3,
   Bell, CalendarDays, CheckCircle2, Clock3, Gauge, Info, LockKeyhole,
   Power, RefreshCw, ShieldCheck, SlidersHorizontal, Target, Timer,
-  TrendingDown, TrendingUp, Wallet, X, Zap,
+  TrendingDown, TrendingUp, Wallet, X, Zap, Wifi, WifiOff,
 } from "lucide-react";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
@@ -15,6 +15,7 @@ import { TradingChart } from "../components/TradingChart";
 import { ErrorBoundary } from "../components/ErrorBoundary";
 import { cn } from "../lib/utils";
 import { derivService } from "../lib/deriv";
+import { logger } from "../lib/logger";
 import { getTradeHistory } from "../lib/storage";
 import type { TradeHistory } from "../types";
 import { useConnectionStore, useMarketStore, useForexRiskStore } from "../store";
@@ -55,7 +56,7 @@ function stateLabel(state: string) {
     SCANNING: "A analisar", WAIT_DATA: "A aguardar dados", WAIT_MARKET: "Mercado fechado",
     WAIT_REGIME: "Regime incompatível", WAIT_SIGNAL: "Sem sinal", NEWS_BLOCK: "Bloqueado por notícias",
     WAIT_CONTRACT: "Sem contrato", RISK_BLOCK: "Risco bloqueado", PROPOSAL_CHECK: "A validar proposta",
-    READY: "Pronto", EXECUTING: "A executar", COOLDOWN: "Cooldown",
+    READY: "Pronto", EXECUTING: "A executar", COOLDOWN: "Cooldown", ENGINE_NOT_READY: "Engine em construção",
   };
   return map[state] ?? state;
 }
@@ -139,7 +140,10 @@ export const ForexDashboardPage = () => {
   const [events, setEvents] = React.useState<ForexEconomicEvent[]>([]);
   const [refreshing, setRefreshing] = React.useState(false);
   const [dashboardError, setDashboardError] = React.useState<string | null>(null);
+  const [calendarError, setCalendarError] = React.useState<string | null>(null);
   const [history, setHistory] = React.useState<TradeHistory[]>([]);
+  const connectionHealth = derivService.getConnectionHealth();
+  const decisionEngineOperational = false; // D11-D14 ainda não foram ligados ao fluxo operacional.
 
   const currentPrice = ticks.at(-1)?.price ?? candles.at(-1)?.close ?? null;
   const previousPrice = ticks.at(-2)?.price ?? candles.at(-2)?.close ?? null;
@@ -190,15 +194,25 @@ export const ForexDashboardPage = () => {
       const provider = new DerivForexCalendarProvider(derivService);
       const start = Math.floor(Date.now() / 1000) - 2 * 3600;
       const end = Math.floor(Date.now() / 1000) + 24 * 3600;
-      const [eur, usd] = await Promise.all([
-        provider.getEvents("EUR", start, end),
-        provider.getEvents("USD", start, end),
-      ]);
-      const unique = new Map<string, ForexEconomicEvent>();
-      [...eur, ...usd].forEach(e => unique.set(e.eventId, e));
-      const list = [...unique.values()].sort((a, b) => a.eventTime - b.eventTime);
-      setEvents(list);
-      setCalendar(evaluateForexCalendar({ now: Math.floor(Date.now() / 1000), events: list }));
+      try {
+        const [eur, usd] = await Promise.all([
+          provider.getEvents("EUR", start, end),
+          provider.getEvents("USD", start, end),
+        ]);
+        const unique = new Map<string, ForexEconomicEvent>();
+        [...eur, ...usd].forEach(e => unique.set(e.eventId, e));
+        const list = [...unique.values()].sort((a, b) => a.eventTime - b.eventTime);
+        setEvents(list);
+        setCalendar(evaluateForexCalendar({ now: Math.floor(Date.now() / 1000), events: list }));
+        setCalendarError(null);
+      } catch (calendarErr: any) {
+        // Do not turn a calendar transport problem into a generic dashboard error.
+        // The engine must fail closed until the native Deriv calendar is available.
+        setEvents([]);
+        setCalendar(null);
+        setCalendarError(calendarErr?.message || "Calendário económico indisponível.");
+        logger.error(`Forex calendar: ${calendarErr?.message || calendarErr}`);
+      }
     } catch (e: any) {
       setDashboardError(e?.message || "Não foi possível actualizar o estado Forex.");
     } finally {
@@ -244,7 +258,9 @@ export const ForexDashboardPage = () => {
   })();
   const dataFreshness = candles.at(-1)?.time ?? null;
   const freshnessSec = dataFreshness ? Math.max(0, Math.floor(now / 1000 - dataFreshness)) : Infinity;
-  const engineState = !isAuthorized ? "WAIT_DATA" : !marketOpen ? "WAIT_MARKET" : candles.length < 60 ? "WAIT_DATA" : calendar?.state === "BLOCK" ? "NEWS_BLOCK" : analysis.direction?.tradable ? "READY" : "WAIT_SIGNAL";
+  const engineState = !isAuthorized ? "WAIT_DATA" : !marketOpen ? "WAIT_MARKET" : candles.length < 60 ? "WAIT_DATA" : !decisionEngineOperational ? "ENGINE_NOT_READY" : calendar?.state === "BLOCK" ? "NEWS_BLOCK" : analysis.direction?.tradable ? "READY" : "WAIT_SIGNAL";
+  const tradeGateOpen = decisionEngineOperational && isAuthorized && marketOpen && candles.length >= 60 && freshnessSec < 180 && !!analysis.direction?.tradable && !!calendar && calendar.state === "CLEAR";
+  const tradeGateReason = !isAuthorized ? "Conta Deriv não autorizada" : !marketOpen ? "Mercado fechado" : candles.length < 60 ? "Histórico insuficiente" : !decisionEngineOperational ? "Decision Engine V1 ainda não operacional (D11–D14)" : calendarError ? "Calendário económico indisponível" : calendar?.state === "BLOCK" ? "Bloqueado por calendário" : !analysis.direction?.tradable ? "Sem sinal CALL/PUT aprovado" : "Todos os gates aprovados";
   const nextEvents = events.filter(e => e.eventTime >= Math.floor(now / 1000)).slice(0, 5);
   const cooldownUntil = lastLoss ? lastLoss.time + risk.cooldownAfterLossSeconds * 1000 : 0;
   const cooldownRemaining = Math.max(0, Math.ceil((cooldownUntil - now) / 1000));
@@ -285,7 +301,8 @@ export const ForexDashboardPage = () => {
           { icon: Target, label: "P&L Forex", value: fmtMoney(pnl), sub: `${wins}W / ${losses}L`, cls: pnl >= 0 ? "text-emerald-400" : "text-red-400" },
           { icon: Gauge, label: "Engine", value: stateLabel(engineState), sub: `score ${analysis.direction ? analysis.direction.rawScore.toFixed(2) : "—"}`, cls: engineState === "READY" ? "text-emerald-400" : "text-amber-300" },
           { icon: Clock3, label: "Sessão", value: session.session.replace("_", " "), sub: session.overlap ? "overlap" : "UTC", cls: "text-cyan-300" },
-          { icon: CalendarDays, label: "Calendário", value: calendarLabel(calendar), sub: `${nextEvents.length} próximos`, cls: calendar?.state === "CLEAR" ? "text-emerald-400" : "text-amber-300" },
+          { icon: CalendarDays, label: "Calendário", value: calendarLabel(calendar), sub: calendarError ? "indisponível" : `${nextEvents.length} próximos`, cls: calendar?.state === "CLEAR" ? "text-emerald-400" : "text-amber-300" },
+          { icon: connectionHealth.connected ? Wifi : WifiOff, label: "Conexão", value: connectionHealth.connected ? "CONECTADO" : "OFFLINE", sub: connectionHealth.connected ? `última msg ${minutesAgo(connectionHealth.lastMessageAt ? Math.floor(connectionHealth.lastMessageAt / 1000) : null)}` : "Deriv WebSocket", cls: connectionHealth.connected ? "text-emerald-400" : "text-red-400" },
         ].map(({ icon: Icon, label, value, sub, cls }) => (
           <NeonCard key={label} variant="blue" className="p-3">
             <div className="flex items-center gap-2"><Icon className={cn("w-3.5 h-3.5", cls)} /><span className="text-[8px] uppercase tracking-widest text-muted-foreground font-black">{label}</span></div>
@@ -345,6 +362,21 @@ export const ForexDashboardPage = () => {
             </div>
           </NeonCard>
 
+          {/* Trade Gate */}
+          <NeonCard variant={tradeGateOpen ? "cyan" : "purple"} className="p-4">
+            <div className="flex items-center justify-between gap-3 mb-3">
+              <div><p className="text-[9px] uppercase tracking-widest text-muted-foreground font-black">TRADE GATE</p><p className={cn("text-xl font-black mt-1", tradeGateOpen ? "text-emerald-400" : "text-amber-300")}>{tradeGateOpen ? "ENTRADA PERMITIDA" : "ENTRADA BLOQUEADA"}</p></div>
+              <Badge className={cn("text-[8px]", tradeGateOpen ? "bg-emerald-500/10 text-emerald-300 border-emerald-500/20" : "bg-amber-500/10 text-amber-300 border-amber-500/20")}>{tradeGateOpen ? "GO" : "NO-GO"}</Badge>
+            </div>
+            <p className="text-[9px] text-muted-foreground leading-relaxed">{tradeGateReason}</p>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-2 mt-3">
+              <div className="rounded-lg border border-white/5 bg-black/20 p-2"><p className="text-[8px] text-muted-foreground">Engine</p><p className="text-[9px] font-black">{decisionEngineOperational ? "OPERACIONAL" : "EM CONSTRUÇÃO"}</p></div>
+              <div className="rounded-lg border border-white/5 bg-black/20 p-2"><p className="text-[8px] text-muted-foreground">Mercado</p><p className="text-[9px] font-black">{marketOpen ? "ABERTO" : "FECHADO"}</p></div>
+              <div className="rounded-lg border border-white/5 bg-black/20 p-2"><p className="text-[8px] text-muted-foreground">Calendar</p><p className="text-[9px] font-black">{calendarError ? "OFFLINE" : calendarLabel(calendar)}</p></div>
+              <div className="rounded-lg border border-white/5 bg-black/20 p-2"><p className="text-[8px] text-muted-foreground">Risk</p><p className="text-[9px] font-black">{consecutiveLosses >= risk.maxConsecutiveLosses ? "BLOCKED" : "CLEAR"}</p></div>
+            </div>
+          </NeonCard>
+
           {/* History */}
           <NeonCard variant="blue" className="p-4">
             <div className="flex items-center justify-between mb-3"><p className="text-[9px] uppercase tracking-widest text-muted-foreground font-black">Histórico de entradas · Forex</p><span className="text-[8px] text-muted-foreground">{history.length} registos</span></div>
@@ -360,7 +392,7 @@ export const ForexDashboardPage = () => {
           <NeonCard variant="cyan" className="p-4">
             <div className="flex items-center justify-between"><p className="text-[9px] uppercase tracking-widest text-muted-foreground font-black">Bot Forex</p><div className={cn("w-2 h-2 rounded-full", botRunning ? "bg-emerald-400 animate-pulse" : "bg-slate-600")} /></div>
             <p className="text-xl font-black mt-2">{botRunning ? "RUNNING" : "STOPPED"}</p>
-            <p className="text-[9px] text-muted-foreground mt-1">{botRunning ? "Interface armada; execução Forex será ligada ao engine." : "Pronto para configuração."}</p>
+            <p className="text-[9px] text-muted-foreground mt-1">{botRunning ? (tradeGateOpen ? "Interface armada; aguardando integração de execução." : `Armado, mas bloqueado: ${tradeGateReason}.`) : "STOPPED · ativação manual pendente."}</p>
             <div className="grid grid-cols-2 gap-2 mt-3"><div className="rounded-lg bg-black/20 border border-white/5 p-2"><p className="text-[8px] text-muted-foreground">Contrato</p><p className="text-xs font-black">Rise/Fall</p></div><div className="rounded-lg bg-black/20 border border-white/5 p-2"><p className="text-[8px] text-muted-foreground">Stake</p><p className="text-xs font-black">${risk.maxStakePerTrade.toFixed(2)} máx.</p></div></div>
           </NeonCard>
 
@@ -369,7 +401,8 @@ export const ForexDashboardPage = () => {
             <div className="space-y-2">
               {[['Stake máx.', `$${risk.maxStakePerTrade.toFixed(2)}`], ['Loss sessão', fmtMoney(-Math.max(0, -pnl)) + ` / -$${risk.maxSessionLoss.toFixed(2)}`], ['Loss diário', fmtMoney(-Math.max(0, -dailyPnl)) + ` / -$${risk.maxDailyLoss.toFixed(2)}`], ['Loss streak', `${consecutiveLosses} / ${risk.maxConsecutiveLosses}`], ['Intervalo', `${risk.minEntryIntervalSeconds}s`]].map(([label, value]) => <div key={label} className="flex items-center justify-between border-b border-white/5 pb-1.5"><span className="text-[9px] text-muted-foreground">{label}</span><span className="text-[9px] font-black">{value}</span></div>)}
             </div>
-            {cooldownRemaining > 0 && <div className="mt-3 rounded-lg border border-amber-500/20 bg-amber-500/5 p-2 text-[9px] text-amber-300"><Timer className="inline w-3 h-3 mr-1" />Cooldown estimado: {cooldownRemaining}s</div>}
+            <div className={cn("mt-3 rounded-lg border p-2 text-[9px] font-black", consecutiveLosses >= risk.maxConsecutiveLosses ? "border-red-500/20 bg-red-500/5 text-red-300" : "border-emerald-500/20 bg-emerald-500/5 text-emerald-300")}>Risk status: {consecutiveLosses >= risk.maxConsecutiveLosses ? "BLOCKED" : "CLEAR"}</div>
+            {cooldownRemaining > 0 && <div className="mt-2 rounded-lg border border-amber-500/20 bg-amber-500/5 p-2 text-[9px] text-amber-300"><Timer className="inline w-3 h-3 mr-1" />Cooldown estimado: {cooldownRemaining}s</div>}
           </NeonCard>
 
           <NeonCard variant="blue" className="p-4">
@@ -377,7 +410,15 @@ export const ForexDashboardPage = () => {
             <p className="text-[8px] text-muted-foreground mb-2">EUR + USD · fonte nativa Deriv</p>
             <div className="space-y-2">
               {nextEvents.map(event => <div key={event.eventId} className="rounded-lg border border-white/5 bg-black/20 p-2"><div className="flex items-center justify-between gap-2"><span className="text-[9px] font-black truncate">{event.name}</span><span className={cn("text-[7px] px-1.5 py-0.5 rounded border uppercase", impactClass(event.impact))}>{event.impact}</span></div><p className="text-[8px] text-muted-foreground mt-1">{event.currency} · {new Date(event.eventTime * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })} · em {Math.max(0, Math.round((event.eventTime * 1000 - now) / 60000))}m</p></div>)}
-              {nextEvents.length === 0 && <div className="rounded-lg border border-white/5 bg-black/20 p-3 text-[9px] text-muted-foreground">Nenhum evento próximo encontrado.</div>}
+              {calendarError && <div className="rounded-lg border border-amber-500/20 bg-amber-500/5 p-3 text-[9px] text-amber-200"><AlertTriangle className="inline w-3 h-3 mr-1" />Calendário nativo Deriv indisponível nesta ligação. O Trade Gate permanece bloqueado por segurança.</div>}
+              {!calendarError && nextEvents.length === 0 && <div className="rounded-lg border border-white/5 bg-black/20 p-3 text-[9px] text-muted-foreground">Nenhum evento próximo encontrado.</div>}
+            </div>
+          </NeonCard>
+
+          <NeonCard variant="cyan" className="p-4">
+            <div className="flex items-center justify-between mb-3"><div className="flex items-center gap-2"><BarChart3 className="w-4 h-4 text-cyan-300" /><p className="text-[9px] uppercase tracking-widest font-black">Performance da sessão</p></div><span className="text-[8px] text-muted-foreground">Forex</span></div>
+            <div className="grid grid-cols-2 gap-2">
+              {[['Trades', history.length.toString()], ['Win rate', history.length ? `${Math.round((wins / history.length) * 100)}%` : '—'], ['Wins / Losses', `${wins} / ${losses}`], ['P&L', fmtMoney(pnl)]].map(([label, value]) => <div key={label} className="rounded-lg border border-white/5 bg-black/20 p-2"><p className="text-[8px] text-muted-foreground">{label}</p><p className={cn("text-sm font-black mt-1", label === 'P&L' ? (pnl >= 0 ? 'text-emerald-400' : 'text-red-400') : '')}>{value}</p></div>)}
             </div>
           </NeonCard>
 
@@ -389,7 +430,7 @@ export const ForexDashboardPage = () => {
 
           <NeonCard variant="purple" className="p-4">
             <div className="flex items-center justify-between mb-2"><div className="flex items-center gap-2"><Zap className="w-4 h-4 text-purple-300" /><p className="text-[9px] uppercase tracking-widest font-black">Pipeline</p></div><span className="text-[8px] text-muted-foreground">V1</span></div>
-            {[['Market', marketOpen, 'Trading Times'], ['Data', candles.length >= 60 && freshnessSec < 180, '60+ candles / fresh'], ['Features', !!analysis.feature, 'sem gaps'], ['Regime', !!analysis.regime && analysis.regime.regime !== 'UNKNOWN', 'compatível'], ['Signal', !!analysis.direction?.tradable, 'CALL/PUT'], ['Calendar', calendar?.state !== 'BLOCK', 'sem bloqueio'], ['Risk', true, 'configurado'], ['Contract', true, 'baseline validado']].map(([label, ok, sub]) => <div key={String(label)} className="flex items-center gap-2 py-1.5 border-b border-white/5 last:border-0"><span className={cn("w-1.5 h-1.5 rounded-full", ok ? "bg-emerald-400" : "bg-red-400")} /><span className="text-[9px] font-bold w-16">{label}</span><span className="text-[8px] text-muted-foreground truncate">{sub}</span>{ok ? <CheckCircle2 className="ml-auto w-3 h-3 text-emerald-400" /> : <AlertTriangle className="ml-auto w-3 h-3 text-red-400" />}</div>)}
+            {[['Market', marketOpen, 'Trading Times'], ['Data', candles.length >= 60 && freshnessSec < 180, '60+ candles / fresh'], ['Features', !!analysis.feature, 'sem gaps'], ['Regime', !!analysis.regime && analysis.regime.regime !== 'UNKNOWN', 'compatível'], ['Signal', !!analysis.direction?.tradable, 'CALL/PUT'], ['Calendar', !!calendar && !calendarError && calendar.state !== 'BLOCK', 'fonte válida'], ['Risk', consecutiveLosses < risk.maxConsecutiveLosses && cooldownRemaining === 0, 'gate de risco'], ['Contract', true, 'baseline validado']].map(([label, ok, sub]) => <div key={String(label)} className="flex items-center gap-2 py-1.5 border-b border-white/5 last:border-0"><span className={cn("w-1.5 h-1.5 rounded-full", ok ? "bg-emerald-400" : "bg-red-400")} /><span className="text-[9px] font-bold w-16">{label}</span><span className="text-[8px] text-muted-foreground truncate">{sub}</span>{ok ? <CheckCircle2 className="ml-auto w-3 h-3 text-emerald-400" /> : <AlertTriangle className="ml-auto w-3 h-3 text-red-400" />}</div>)}
           </NeonCard>
         </div>
       </div>

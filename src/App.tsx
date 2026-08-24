@@ -11,6 +11,7 @@ import { ErrorBoundary } from "./components/ErrorBoundary";
 import { derivService } from "./lib/deriv";
 import { logger } from "./lib/logger";
 import { useConnectionStore, useBotStore, useMarketStore, useHistoryStore } from "./store";
+import { forexMarketDataService } from "./forex/market-data";
 
 // ── Lazy page imports ─────────────────────────────────────────────────────────
 const HomePage       = React.lazy(() => import("./pages/HomePage").then(m => ({ default: m.HomePage })));
@@ -218,6 +219,12 @@ export default function App() {
     });
     // Resposta do ticks_history (candles históricos)
     const unsubCandles = derivService.on("candles", (data: any) => {
+      // Forex history is loaded through the request/response API below so that
+      // each timeframe change is correlated with the exact request that asked
+      // for it. The old global listener had no request identity and could let
+      // a stale timeframe overwrite the new one. Synthetic markets keep the
+      // legacy event-driven path.
+      if (useMarketStore.getState().market === "forex") return;
       if (data.error || !data.candles?.length) return;
       const historical = data.candles.map((c: any) => ({
         time: Number(c.epoch),
@@ -248,15 +255,31 @@ export default function App() {
   // Feed de mercado — derivado do mercado/símbolo/timeframe actual.
   // Forex usa frxEURUSD + M1 por defeito nesta Fase 2; continua sem execução.
   const { market, symbol, timeframe } = useMarketStore();
-  const isAuthorizedRef = React.useRef(false);
-  useEffect(() => { isAuthorizedRef.current = isAuthorized; }, [isAuthorized]);
+  const forexHistoryRequestRef = React.useRef(0);
   useEffect(() => {
-    if (!isAuthorizedRef.current || !market) return;
+    if (!isAuthorized || !market) return;
+
+    const requestEpoch = ++forexHistoryRequestRef.current;
     derivService.unsubscribeTicks(symbol);
     derivService.subscribeTicks(symbol);
-    derivService.requestTicksHistory(symbol, 500, market === "forex" ? Math.max(60, timeframe) : timeframe);
 
     if (market === "forex") {
+      // IMPORTANT: never wait for live ticks to build a new timeframe.
+      // Fetch a full historical dataset first, then let the tick stream update
+      // only the last/open candle. A stale request is ignored if the user
+      // changes timeframe again before the response arrives.
+      const timeframeMinutes = Math.max(1, Math.round(timeframe / 60));
+      forexMarketDataService.loadHistoricalCandles("frxEURUSD", timeframeMinutes, 500)
+        .then((historical) => {
+          if (requestEpoch !== forexHistoryRequestRef.current) return;
+          useMarketStore.getState().setHistoricalCandles(historical);
+          logger.system(`✓ Forex | ${historical.length} candles históricos carregados | M${timeframeMinutes}`);
+        })
+        .catch((error: any) => {
+          if (requestEpoch !== forexHistoryRequestRef.current) return;
+          logger.error(`Forex histórico M${timeframeMinutes}: ${error?.message || error}`);
+        });
+
       derivService.getActiveSymbols(["CALL", "PUT"])
         .then((symbols) => {
           const eurusd = symbols.find((item: any) => item.underlying_symbol === "frxEURUSD");
@@ -270,9 +293,15 @@ export default function App() {
           logger.system(`✓ New API | frxEURUSD contracts_for: ${contracts.join(", ") || "nenhum"}`);
         })
         .catch((error: any) => logger.error(`New API contracts_for: ${error.message}`));
+    } else {
+      derivService.requestTicksHistory(symbol, 500, timeframe);
     }
-    return () => { derivService.unsubscribeTicks(symbol); };
-  }, [market, symbol, timeframe]);
+
+    return () => {
+      if (market === "forex") forexHistoryRequestRef.current++;
+      derivService.unsubscribeTicks(symbol);
+    };
+  }, [isAuthorized, market, symbol, timeframe]);
 
   // Carregar histórico quando user autentica
   useEffect(() => {

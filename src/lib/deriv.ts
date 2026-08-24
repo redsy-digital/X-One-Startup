@@ -129,16 +129,76 @@ export class DerivService {
     return data.trading_times ?? {};
   }
 
-  /** New API: calendário económico nativo. Mantemos o payload da New API isolado aqui. */
+  /**
+   * Deriv-native economic calendar. The current authenticated New API socket
+   * may reject this command as "Unrecognized request" even though Deriv still
+   * exposes the native economic_calendar command on its public WebSocket.
+   * Prefer the current socket; only fall back to Deriv's own public calendar
+   * transport when that exact capability is unavailable. No third-party data
+   * source is introduced.
+   */
   async getEconomicCalendar(currency?: string, startDate?: number, endDate?: number) {
-    const data = await this.request<any>({
-      economic_calendar: 1,
-      ...(currency ? { currency } : {}),
-      ...(startDate !== undefined ? { start_date: startDate } : {}),
-      ...(endDate !== undefined ? { end_date: endDate } : {}),
-    }, "economic_calendar");
-    if (data.error) throw new Error(data.error.message || "Erro em economic_calendar");
-    return data.economic_calendar ?? { events: [] };
+    try {
+      const data = await this.request<any>({
+        economic_calendar: 1,
+        ...(currency ? { currency } : {}),
+        ...(startDate !== undefined ? { start_date: startDate } : {}),
+        ...(endDate !== undefined ? { end_date: endDate } : {}),
+      }, "economic_calendar");
+      if (data.error) throw new Error(data.error.message || "Erro em economic_calendar");
+      return data.economic_calendar ?? { events: [] };
+    } catch (error: any) {
+      const message = String(error?.message || error || "");
+      if (!/unrecognized request/i.test(message)) throw error;
+      logger.system("[Deriv] economic_calendar não é reconhecido no socket autenticado; a usar fallback nativo público da Deriv.");
+      return this.getEconomicCalendarPublic(currency, startDate, endDate);
+    }
+  }
+
+  private getEconomicCalendarPublic(currency?: string, startDate?: number, endDate?: number): Promise<any> {
+    return new Promise((resolve, reject) => {
+      const ws = new WebSocket(`wss://ws.binaryws.com/websockets/v3?app_id=${encodeURIComponent(this.appId)}`);
+      const timeout = setTimeout(() => {
+        try { ws.close(); } catch { /* noop */ }
+        reject(new Error("Timeout ao consultar o calendário económico nativo da Deriv."));
+      }, 12000);
+
+      ws.onopen = () => {
+        ws.send(JSON.stringify({
+          economic_calendar: 1,
+          ...(currency ? { currency } : {}),
+          ...(startDate !== undefined ? { start_date: startDate } : {}),
+          ...(endDate !== undefined ? { end_date: endDate } : {}),
+        }));
+      };
+
+      ws.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data);
+          if (data.error) {
+            clearTimeout(timeout);
+            ws.close();
+            reject(new Error(data.error.message || "Erro em economic_calendar"));
+            return;
+          }
+          if (data.msg_type === "economic_calendar") {
+            clearTimeout(timeout);
+            ws.close();
+            resolve(data.economic_calendar ?? { events: [] });
+          }
+        } catch (parseError: any) {
+          clearTimeout(timeout);
+          try { ws.close(); } catch { /* noop */ }
+          reject(new Error(parseError?.message || "Resposta inválida do calendário económico."));
+        }
+      };
+
+      ws.onerror = () => {
+        clearTimeout(timeout);
+        try { ws.close(); } catch { /* noop */ }
+        reject(new Error("Falha na ligação ao calendário económico nativo da Deriv."));
+      };
+    });
   }
 
   /** New API: contratos disponíveis para um símbolo. */
