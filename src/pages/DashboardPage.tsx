@@ -17,7 +17,7 @@ import {
 import { TradingChart } from "../components/TradingChart";
 import { ErrorBoundary } from "../components/ErrorBoundary";
 import { MarketSelectScreen } from "../components/MarketSelectScreen";
-import { ForexDashboardPlaceholder } from "../components/ForexDashboardPlaceholder";
+import { ForexDashboardPage } from "./ForexDashboardPage";
 import { SYMBOLS } from "../constants";
 import { logger, LogEntry } from "../lib/logger";
 import { getTradeHistory } from "../lib/storage";
@@ -251,7 +251,7 @@ export const DashboardPage = () => {
   // resto da página abaixo — o dashboard de sintéticos continua exactamente
   // como sempre esteve quando market === "synthetic".
   if (market === null) return <MarketSelectScreen />;
-  if (market === "forex") return <ForexDashboardPlaceholder />;
+  if (market === "forex") return <ForexDashboardPage />;
 
   return (
     <>

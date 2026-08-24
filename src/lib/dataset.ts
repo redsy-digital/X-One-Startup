@@ -152,7 +152,9 @@ const DELAY_BETWEEN_PAGES_MS = 400;
  * (1000, confirmado na prática — pedir mais devolve só 1000). Cada página
  * busca o troço imediatamente anterior ao mais antigo já obtido, até
  * atingir o total pedido, esgotar o histórico disponível, ou chegar ao
- * tecto de segurança (50 páginas).
+ * tecto de segurança (MAX_PAGES). Em Forex, uma página com menos de 1000
+ * candles é normal por causa de fins-de-semana/feriados e NÃO encerra a
+ * paginação.
  *
  * IMPORTANTE — partilha canais de eventos com o resto da app (App.tsx
  * ouve "candles" para o histórico normal). O buffer normal de candles
@@ -216,16 +218,21 @@ export async function fetchAndDownloadHistoricalDataset(
       // próxima página (mais antiga ainda) entra ANTES desta no array final.
       allTimes = [...result.times, ...allTimes];
       allPrices = [...result.prices, ...allPrices];
+      // `end` is a boundary; move one second before the oldest returned tick
+      // so the next page cannot repeat that same timestamp.
       endTime = result.times[0] - 1;
       const nowCandles = bucketTicksIntoCandles(allTimes, allPrices, granularitySeconds).length;
       onProgress?.(nowCandles, page);
-      if (result.times.length < pageCount) break; // Deriv devolveu menos do pedido = fim do histórico
+      // Uma página curta também pode ocorrer por fim-de-semana/feriado.
+      // Só uma página vazia significa que não há mais histórico.
     } else if (!useRawTicks && "candles" in result) {
       if (result.candles.length === 0) break;
       allCandles = [...result.candles, ...allCandles];
-      endTime = result.candles[0].time - granularitySeconds;
+      // `end` é uma boundary; recuar 1 segundo evita repetir o candle mais
+      // antigo sem saltar um intervalo inteiro. Uma página curta é normal
+      // em Forex quando o período atravessa fins-de-semana/feriados.
+      endTime = result.candles[0].time - 1;
       onProgress?.(allCandles.length, page);
-      if (result.candles.length < pageCount) break;
     }
 
     if (page < MAX_PAGES) await sleep(DELAY_BETWEEN_PAGES_MS);

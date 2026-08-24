@@ -3,7 +3,7 @@ import { useNavigate, useLocation } from "react-router-dom";
 import { cn } from "../lib/utils";
 import {
   Home, LayoutDashboard, History, Terminal,
-  TrendingUp, Settings
+  TrendingUp, Settings, FlaskConical
 } from "lucide-react";
 
 interface SidebarProps {
@@ -16,6 +16,7 @@ interface SidebarProps {
 const menuItems = [
   { icon: Home,            label: "Home",         path: "/" },
   { icon: LayoutDashboard, label: "Dashboard",    path: "/dashboard" },
+  { icon: FlaskConical,     label: "Testes Forex", path: "/testes-forex" },
   { icon: History,         label: "Histórico",    path: "/historico" },
   { icon: Terminal,        label: "Logs",         path: "/logs" },
   { icon: TrendingUp,      label: "Estratégias",  path: "/estrategias" },

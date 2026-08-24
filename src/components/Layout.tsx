@@ -21,6 +21,7 @@ export const Layout = ({ children }: LayoutProps) => {
   const pathToTab: Record<string, string> = {
     "/": "Home",
     "/dashboard": "Dashboard",
+    "/testes-forex": "Testes Forex",
     "/historico": "Histórico",
     "/logs": "Logs",
     "/estrategias": "Estratégias",
@@ -33,6 +34,7 @@ export const Layout = ({ children }: LayoutProps) => {
     const tabToPath: Record<string, string> = {
       "Home": "/",
       "Dashboard": "/dashboard",
+      "Testes Forex": "/testes-forex",
       "Histórico": "/historico",
       "Logs": "/logs",
       "Estratégias": "/estrategias",

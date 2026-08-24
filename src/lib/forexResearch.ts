@@ -1,0 +1,768 @@
+import { Candle } from "../types";
+import { calculateADX, calculateATR, calculateBollingerBands, calculateEMA, calculateMACD, calculateRSI } from "./indicators";
+
+/** Number of candles between the decision candle and the target candle. */
+export type ResearchHorizon = 1 | 2 | 3 | 4 | 6 | 8 | 12 | 24;
+export type AucDirection = "DIRECT" | "INVERSE" | "NEUTRAL";
+export type FeatureRole = "DIRECTION" | "REGIME";
+
+export interface ForexFeatureRow {
+  time: number;
+  targetReturn: number;
+  target: 0 | 1;
+  emaSpread: number;
+  rsiCentered: number;
+  macdHistogram: number;
+  adxDirection: number;
+  atrPct: number;
+  bollingerPosition: number;
+  bollingerWidthPct: number;
+  roc: number;
+  bodyPct: number;
+  rangePct: number;
+  closeLocation: number;
+  volatility20: number;
+}
+
+export type Stability = "STABLE" | "WEAK" | "UNSTABLE" | "NO_SIGNAL";
+
+export interface FeatureMetric {
+  key: keyof Omit<ForexFeatureRow, "time" | "targetReturn" | "target">;
+  role: FeatureRole;
+  trainN: number;
+  validationN: number;
+  trainPearson: number;
+  validationPearson: number;
+  trainDirectionalAccuracy: number;
+  validationDirectionalAccuracy: number;
+  trainBalancedAccuracy: number;
+  validationBalancedAccuracy: number;
+  trainAuc: number;
+  validationAuc: number;
+  trainAucEquivalent: number;
+  validationAucEquivalent: number;
+  trainAucDirection: AucDirection;
+  validationAucDirection: AucDirection;
+  validationAucSkill: number;
+  validationAucPValue: number;
+  validationAucCiLow: number;
+  validationAucCiHigh: number;
+  validationPearsonPValue: number;
+  validationPearsonCiLow: number;
+  validationPearsonCiHigh: number;
+
+  // Separate regime/volatility experiment: does the feature discriminate
+  // high-vs-low future absolute return, rather than UP-vs-DOWN direction?
+  regimeAuc: number;
+  regimeAucEquivalent: number;
+  regimeAucDirection: AucDirection;
+  regimeAucSkill: number;
+  regimeAucPValue: number;
+  regimeAucCiLow: number;
+  regimeAucCiHigh: number;
+
+  // Same-feature walk-forward diagnostics.
+  walkForwardWindows: number;
+  walkForwardPositiveWindows: number;
+  walkForwardDirectionConsistency: number;
+  walkForwardMeanSkill: number;
+  walkForwardMinSkill: number;
+  walkForwardStable: boolean;
+  stability: Stability;
+}
+
+export interface ValidationWindow {
+  index: number;
+  trainN: number;
+  validationN: number;
+  validationWinRate: number;
+  features: FeatureMetric[];
+}
+
+
+export interface FeatureStabilityCell {
+  timeframeMinutes: number;
+  targetMinutes: number;
+  key: FeatureMetric["key"];
+  validationAuc: number;
+  validationAucEquivalent: number;
+  validationAucDirection: AucDirection;
+  validationAucSkill: number;
+  validationAucPValue: number;
+  validationAucCiLow: number;
+  validationAucCiHigh: number;
+  walkForwardWindows: number;
+  walkForwardPositiveWindows: number;
+  walkForwardDirectionConsistency: number;
+  walkForwardMeanSkill: number;
+  walkForwardMinSkill: number;
+  walkForwardStable: boolean;
+  stability: Stability;
+}
+
+export interface FeatureStabilityMatrix {
+  key: FeatureMetric["key"];
+  cells: FeatureStabilityCell[];
+  totalCells: number;
+  signalCells: number;
+  stableCells: number;
+  meanSkill: number;
+  minSkill: number;
+  signalRate: number;
+  directionConsistency: number;
+}
+
+export interface ForexResearchResult {
+  symbol: string;
+  granularitySeconds: number;
+  timeframeMinutes: number;
+  horizonCandles: ResearchHorizon;
+  targetMinutes: number;
+  candles: number;
+  samples: number;
+  splitIndex: number;
+  trainWinRate: number;
+  validationWinRate: number;
+  trainMeanReturn: number;
+  validationMeanReturn: number;
+  baselineAlwaysUpAccuracy: number;
+  baselineAlwaysDownAccuracy: number;
+  baselineBalancedAccuracy: number;
+  validationPositiveN: number;
+  validationNegativeN: number;
+  validationHighVolN: number;
+  validationLowVolN: number;
+  validationWindows: ValidationWindow[];
+  features: FeatureMetric[];
+}
+
+export const FEATURE_KEYS: FeatureMetric["key"][] = [
+  "emaSpread", "rsiCentered", "macdHistogram", "adxDirection", "atrPct",
+  "bollingerPosition", "bollingerWidthPct", "roc", "bodyPct", "rangePct",
+  "closeLocation", "volatility20",
+];
+
+const REGIME_FEATURE_KEYS = new Set<FeatureMetric["key"]>([
+  "atrPct", "bollingerWidthPct", "rangePct", "volatility20",
+]);
+
+function featureRole(key: FeatureMetric["key"]): FeatureRole {
+  return REGIME_FEATURE_KEYS.has(key) ? "REGIME" : "DIRECTION";
+}
+
+function mean(values: number[]) { return values.length ? values.reduce((a, b) => a + b, 0) / values.length : 0; }
+function median(values: number[]) {
+  if (!values.length) return 0;
+  const sorted = [...values].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+}
+function variance(values: number[]) {
+  if (values.length < 2) return 0;
+  const m = mean(values);
+  return mean(values.map(v => (v - m) ** 2));
+}
+function std(values: number[]) { return Math.sqrt(variance(values)); }
+function pct(value: number, base: number) { return base === 0 ? 0 : value / Math.abs(base); }
+
+function pearson(x: number[], y: number[]) {
+  if (x.length < 2 || x.length !== y.length) return 0;
+  const mx = mean(x), my = mean(y);
+  let num = 0, dx = 0, dy = 0;
+  for (let i = 0; i < x.length; i++) {
+    const a = x[i] - mx, b = y[i] - my;
+    num += a * b; dx += a * a; dy += b * b;
+  }
+  const den = Math.sqrt(dx * dy);
+  return den === 0 ? 0 : num / den;
+}
+
+function directionalAccuracy(x: number[], y: number[]) {
+  let n = 0, wins = 0;
+  for (let i = 0; i < x.length; i++) {
+    if (x[i] === 0 || y[i] === 0) continue;
+    n++;
+    if ((x[i] > 0) === (y[i] > 0)) wins++;
+  }
+  return n ? wins / n : 0.5;
+}
+
+function balancedAccuracy(x: number[], target: number[]) {
+  let tp = 0, tn = 0, p = 0, n = 0;
+  for (let i = 0; i < x.length; i++) {
+    if (target[i] === 1) { p++; if (x[i] > 0) tp++; }
+    else { n++; if (x[i] <= 0) tn++; }
+  }
+  return p && n ? 0.5 * (tp / p + tn / n) : 0.5;
+}
+
+interface RankedScores { ranks: number[]; positives: number; negatives: number; auc: number; }
+function rankScores(score: number[], target: number[]): RankedScores {
+  const pairs = score.map((s, i) => ({ s, y: target[i], i })).sort((a, b) => a.s - b.s);
+  const ranks = new Array(score.length);
+  let rank = 1;
+  let sumPositiveRanks = 0;
+  let positives = 0;
+  for (let i = 0; i < pairs.length;) {
+    let j = i + 1;
+    while (j < pairs.length && pairs[j].s === pairs[i].s) j++;
+    const avgRank = (rank + rank + (j - i) - 1) / 2;
+    for (let k = i; k < j; k++) {
+      ranks[pairs[k].i] = avgRank;
+      if (pairs[k].y === 1) { sumPositiveRanks += avgRank; positives++; }
+    }
+    rank += j - i; i = j;
+  }
+  const negatives = score.length - positives;
+  const auc = positives && negatives
+    ? (sumPositiveRanks - positives * (positives + 1) / 2) / (positives * negatives)
+    : 0.5;
+  return { ranks, positives, negatives, auc };
+}
+
+function auc(score: number[], target: number[]) { return rankScores(score, target).auc; }
+function aucEquivalent(value: number) { return Math.max(value, 1 - value); }
+function aucDirection(value: number, epsilon = 0.005): AucDirection {
+  if (value > 0.5 + epsilon) return "DIRECT";
+  if (value < 0.5 - epsilon) return "INVERSE";
+  return "NEUTRAL";
+}
+
+// Deterministic PRNG so diagnostics are reproducible across runs.
+function mulberry32(seed: number) {
+  return function() {
+    let t = seed += 0x6D2B79F5;
+    t = Math.imul(t ^ t >>> 15, t | 1);
+    t ^= t + Math.imul(t ^ t >>> 7, t | 61);
+    return ((t ^ t >>> 14) >>> 0) / 4294967296;
+  };
+}
+
+function permutationPValueForAuc(ranks: number[], target: number[], observed: number, permutations = 400, seed = 1337) {
+  const n = target.length;
+  const positives = target.reduce((s, y) => s + y, 0);
+  const negatives = n - positives;
+  if (!positives || !negatives || n < 30) return 1;
+  const rand = mulberry32(seed);
+  const indices = Array.from({ length: n }, (_, i) => i);
+  let extreme = 0;
+  for (let p = 0; p < permutations; p++) {
+    for (let i = n - 1; i > 0; i--) {
+      const j = Math.floor(rand() * (i + 1));
+      const tmp = indices[i]; indices[i] = indices[j]; indices[j] = tmp;
+    }
+    let sumRanks = 0;
+    for (let i = 0; i < positives; i++) sumRanks += ranks[indices[i]];
+    const permAuc = (sumRanks - positives * (positives + 1) / 2) / (positives * negatives);
+    if (Math.abs(permAuc - 0.5) >= Math.abs(observed - 0.5)) extreme++;
+  }
+  return (extreme + 1) / (permutations + 1);
+}
+
+function aucCi(aucValue: number, nPos: number, nNeg: number, z = 1.96) {
+  if (nPos < 2 || nNeg < 2) return { low: 0.5, high: 0.5 };
+  const q1 = aucValue / (2 - aucValue);
+  const q2 = (2 * aucValue * aucValue) / (1 + aucValue);
+  const se = Math.sqrt(Math.max(0, (aucValue * (1 - aucValue) + (nPos - 1) * (q1 - aucValue * aucValue) + (nNeg - 1) * (q2 - aucValue * aucValue)) / (nPos * nNeg)));
+  return { low: Math.max(0, aucValue - z * se), high: Math.min(1, aucValue + z * se) };
+}
+
+function normalCdf(x: number) { return 0.5 * (1 + erf(x / Math.SQRT2)); }
+function erf(x: number) {
+  const sign = x < 0 ? -1 : 1;
+  x = Math.abs(x);
+  const a1 = 0.254829592, a2 = -0.284496736, a3 = 1.421413741, a4 = -1.453152027, a5 = 1.061405429, p = 0.3275911;
+  const t = 1 / (1 + p * x);
+  return sign * (1 - (((((a5 * t + a4) * t) + a3) * t + a2) * t + a1) * t * Math.exp(-x * x));
+}
+function pearsonPValue(r: number, n: number) {
+  if (n < 4 || Math.abs(r) >= 1) return Math.abs(r) >= 1 ? 0 : 1;
+  const t = Math.abs(r) * Math.sqrt((n - 2) / Math.max(1e-12, 1 - r * r));
+  return Math.min(1, 2 * (1 - normalCdf(t)));
+}
+function pearsonCi(r: number, n: number) {
+  if (n < 8 || Math.abs(r) >= 0.999999) return { low: r, high: r };
+  const z = 0.5 * Math.log((1 + r) / (1 - r));
+  const se = 1 / Math.sqrt(n - 3);
+  const low = z - 1.96 * se, high = z + 1.96 * se;
+  return { low: Math.tanh(low), high: Math.tanh(high) };
+}
+
+function metricFor(rows: ForexFeatureRow[], key: FeatureMetric["key"], split: number, seedOffset = 0): FeatureMetric {
+  const train = rows.slice(0, split), valid = rows.slice(split);
+  const tx = train.map(r => Number(r[key])), vx = valid.map(r => Number(r[key]));
+  const ty = train.map(r => r.targetReturn), vy = valid.map(r => r.targetReturn);
+  const tcls = train.map(r => r.target), vcls = valid.map(r => r.target);
+  const trainPearson = pearson(tx, ty), validationPearson = pearson(vx, vy);
+  const trainRanked = rankScores(tx, tcls);
+  const validationRanked = rankScores(vx, vcls);
+  const trainAuc = trainRanked.auc, validationAuc = validationRanked.auc;
+  const validationAucSkill = aucEquivalent(validationAuc) - 0.5;
+  const aucCi95 = aucCi(validationAuc, validationRanked.positives, validationRanked.negatives);
+  const validationAucPValue = permutationPValueForAuc(validationRanked.ranks, vcls, validationAuc, 250, 1337 + seedOffset);
+  const pCi = pearsonCi(validationPearson, vx.length);
+
+  // Separate regime target: high future absolute return vs low future absolute return.
+  // The threshold is learned ONLY from the training portion, preventing validation leakage.
+  const regimeThreshold = median(train.map(r => Math.abs(r.targetReturn)));
+  const trainRegime = train.map(r => Math.abs(r.targetReturn) >= regimeThreshold ? 1 : 0);
+  const validRegime = valid.map(r => Math.abs(r.targetReturn) >= regimeThreshold ? 1 : 0);
+  const regimeRanked = rankScores(vx, validRegime);
+  const regimeAuc = REGIME_FEATURE_KEYS.has(key) ? regimeRanked.auc : 0.5;
+  const regimeEq = aucEquivalent(regimeAuc);
+  const regimeSkill = regimeEq - 0.5;
+  const regimeCi = REGIME_FEATURE_KEYS.has(key)
+    ? aucCi(regimeAuc, regimeRanked.positives, regimeRanked.negatives)
+    : { low: 0.5, high: 0.5 };
+  const regimeP = REGIME_FEATURE_KEYS.has(key)
+    ? permutationPValueForAuc(regimeRanked.ranks, validRegime, regimeAuc, 200, 7331 + seedOffset)
+    : 1;
+
+  const directionStable = aucDirection(trainAuc) === aucDirection(validationAuc)
+    || trainRanked.auc === 0.5 || validationRanked.auc === 0.5;
+  const enough = train.length >= 300 && valid.length >= 150;
+  const aucClearlyAboveChance = aucCi95.low > 0.5 || aucCi95.high < 0.5;
+  let stability: Stability = "NO_SIGNAL";
+  if (enough && aucClearlyAboveChance && validationAucPValue < 0.05 && directionStable && validationAucSkill >= 0.025) stability = "STABLE";
+  else if (enough && validationAucPValue < 0.20 && validationAucSkill >= 0.015) stability = directionStable ? "WEAK" : "UNSTABLE";
+  else if (!directionStable && trainRanked.auc !== 0.5) stability = "UNSTABLE";
+
+  return {
+    key,
+    role: featureRole(key),
+    trainN: train.length,
+    validationN: valid.length,
+    trainPearson,
+    validationPearson,
+    trainDirectionalAccuracy: directionalAccuracy(tx, ty),
+    validationDirectionalAccuracy: directionalAccuracy(vx, vy),
+    trainBalancedAccuracy: balancedAccuracy(tx, tcls),
+    validationBalancedAccuracy: balancedAccuracy(vx, vcls),
+    trainAuc,
+    validationAuc,
+    trainAucEquivalent: aucEquivalent(trainAuc),
+    validationAucEquivalent: aucEquivalent(validationAuc),
+    trainAucDirection: aucDirection(trainAuc),
+    validationAucDirection: aucDirection(validationAuc),
+    validationAucSkill,
+    validationAucPValue,
+    validationAucCiLow: aucCi95.low,
+    validationAucCiHigh: aucCi95.high,
+    validationPearsonPValue: pearsonPValue(validationPearson, vx.length),
+    validationPearsonCiLow: pCi.low,
+    validationPearsonCiHigh: pCi.high,
+    regimeAuc,
+    regimeAucEquivalent: regimeEq,
+    regimeAucDirection: aucDirection(regimeAuc),
+    regimeAucSkill: regimeSkill,
+    regimeAucPValue: regimeP,
+    regimeAucCiLow: regimeCi.low,
+    regimeAucCiHigh: regimeCi.high,
+    walkForwardWindows: 0,
+    walkForwardPositiveWindows: 0,
+    walkForwardDirectionConsistency: 0,
+    walkForwardMeanSkill: 0,
+    walkForwardMinSkill: 0,
+    walkForwardStable: false,
+    stability,
+  };
+}
+
+export function buildForexFeatureRows(candles: Candle[], horizon: ResearchHorizon): ForexFeatureRow[] {
+  const rows: ForexFeatureRow[] = [];
+  for (let i = 40; i + horizon < candles.length; i++) {
+    const prefix = candles.slice(Math.max(0, i - 249), i + 1);
+    const closes = prefix.map(c => c.close);
+    const current = prefix[prefix.length - 1];
+    const future = candles[i + horizon].close;
+    const targetReturn = pct(future - current.close, current.close);
+    const ema9 = calculateEMA(closes, 9), ema21 = calculateEMA(closes, 21);
+    const rsi = calculateRSI(closes, 14), macd = calculateMACD(closes), adx = calculateADX(prefix, 14), atr = calculateATR(prefix, 14);
+    const bb = calculateBollingerBands(closes, 20, 2);
+    const rocBase = closes[Math.max(0, closes.length - 6)];
+    const body = current.close - current.open, range = current.high - current.low;
+    const bbWidth = bb.middle === 0 ? 0 : (bb.upper - bb.lower) / Math.abs(bb.middle);
+    const bbPos = bb.upper === bb.lower ? 0.5 : (current.close - bb.lower) / (bb.upper - bb.lower);
+    const recentReturns = closes.slice(-21).map((v, idx, arr) => idx === 0 ? 0 : pct(v - arr[idx - 1], arr[idx - 1])).slice(1);
+    rows.push({
+      time: current.time, targetReturn, target: targetReturn > 0 ? 1 : 0,
+      emaSpread: pct(ema9 - ema21, current.close), rsiCentered: (rsi - 50) / 50,
+      macdHistogram: pct(macd.histogram, current.close),
+      adxDirection: adx.adx > 0 ? ((adx.plusDI - adx.minusDI) / Math.max(adx.plusDI + adx.minusDI, 1)) * (adx.adx / 100) : 0,
+      atrPct: pct(atr, current.close), bollingerPosition: Math.max(-1, Math.min(1, (bbPos - 0.5) * 2)),
+      bollingerWidthPct: bbWidth, roc: pct(current.close - rocBase, rocBase), bodyPct: pct(body, current.close),
+      rangePct: pct(range, current.close), closeLocation: range === 0 ? 0 : ((current.close - current.low) / range) * 2 - 1,
+      volatility20: std(recentReturns),
+    });
+  }
+  return rows;
+}
+
+function buildWindow(rows: ForexFeatureRow[], index: number, validationStart: number, validationEnd: number): ValidationWindow {
+  const train = rows.slice(0, validationStart), valid = rows.slice(validationStart, validationEnd);
+  const localRows = [...train, ...valid];
+  return {
+    index,
+    trainN: train.length,
+    validationN: valid.length,
+    validationWinRate: mean(valid.map(r => r.target)),
+    features: FEATURE_KEYS.map((key, k) => metricFor(localRows, key, train.length, index * 100 + k))
+      .sort((a, b) => b.validationAucSkill - a.validationAucSkill),
+  };
+}
+
+function applyWalkForwardStability(features: FeatureMetric[], windows: ValidationWindow[]) {
+  return features.map(feature => {
+    const same = windows.map(w => w.features.find(f => f.key === feature.key)).filter(Boolean) as FeatureMetric[];
+    const signalWindows = same.filter(f => f.validationAucSkill >= 0.015 && f.validationAucDirection !== "NEUTRAL");
+    const positiveWindows = signalWindows.length;
+    const directionCounts = new Map<AucDirection, number>();
+    signalWindows.forEach(f => directionCounts.set(f.validationAucDirection, (directionCounts.get(f.validationAucDirection) ?? 0) + 1));
+    const maxDirectionCount = Math.max(0, ...directionCounts.values());
+    const consistency = signalWindows.length ? maxDirectionCount / signalWindows.length : 0;
+    const meanSkill = mean(same.map(f => f.validationAucSkill));
+    const minSkill = same.length ? Math.min(...same.map(f => f.validationAucSkill)) : 0;
+    const walkStable = same.length >= 2
+      && positiveWindows >= Math.ceil(same.length * 2 / 3)
+      && consistency >= 0.67
+      && meanSkill >= 0.02;
+    let stability = feature.stability;
+    if (walkStable && (stability === "STABLE" || feature.validationAucPValue < 0.05)) stability = "STABLE";
+    else if (positiveWindows >= Math.ceil(same.length / 2) && consistency >= 0.5 && meanSkill >= 0.015) {
+      stability = stability === "UNSTABLE" ? "UNSTABLE" : "WEAK";
+    } else if (same.length >= 2 && positiveWindows === 0) {
+      stability = "NO_SIGNAL";
+    }
+    return {
+      ...feature,
+      walkForwardWindows: same.length,
+      walkForwardPositiveWindows: positiveWindows,
+      walkForwardDirectionConsistency: consistency,
+      walkForwardMeanSkill: meanSkill,
+      walkForwardMinSkill: minSkill,
+      walkForwardStable: walkStable,
+      stability,
+    };
+  });
+}
+
+export function runForexResearch(
+  candles: Candle[],
+  horizon: ResearchHorizon = 1,
+  granularitySeconds?: number,
+  targetMinutes?: number,
+): ForexResearchResult {
+  const sorted = [...candles].sort((a, b) => a.time - b.time);
+  const inferredGranularity = granularitySeconds ?? (sorted.length > 1 ? Math.max(1, sorted[1].time - sorted[0].time) : 900);
+  const timeframeMinutes = inferredGranularity / 60;
+  const resolvedTargetMinutes = targetMinutes ?? timeframeMinutes * horizon;
+  const rows = buildForexFeatureRows(sorted, horizon);
+  const split = Math.floor(rows.length * 0.7);
+  const train = rows.slice(0, split), valid = rows.slice(split);
+  const windowCount = valid.length >= 450 ? 3 : valid.length >= 300 ? 2 : 1;
+  const windowSize = Math.floor(valid.length / windowCount);
+  const validationWindows: ValidationWindow[] = [];
+  for (let w = 0; w < windowCount; w++) {
+    const start = split + w * windowSize;
+    const end = w === windowCount - 1 ? rows.length : start + windowSize;
+    if (start - 40 >= 100 && end - start >= 80) validationWindows.push(buildWindow(rows, w + 1, start, end));
+  }
+  const baseFeatures = FEATURE_KEYS.map((key, k) => metricFor(rows, key, split, k));
+  const features = applyWalkForwardStability(baseFeatures, validationWindows)
+    .sort((a, b) => b.validationAucSkill - a.validationAucSkill);
+  const validationRegimeThreshold = median(train.map(r => Math.abs(r.targetReturn)));
+  const highVolN = valid.filter(r => Math.abs(r.targetReturn) >= validationRegimeThreshold).length;
+  return {
+    symbol: "frxEURUSD",
+    granularitySeconds: inferredGranularity,
+    timeframeMinutes,
+    horizonCandles: horizon,
+    targetMinutes: resolvedTargetMinutes,
+    candles: sorted.length,
+    samples: rows.length,
+    splitIndex: split,
+    trainWinRate: mean(train.map(r => r.target)), validationWinRate: mean(valid.map(r => r.target)),
+    trainMeanReturn: mean(train.map(r => r.targetReturn)), validationMeanReturn: mean(valid.map(r => r.targetReturn)),
+    baselineAlwaysUpAccuracy: mean(valid.map(r => r.target)),
+    baselineAlwaysDownAccuracy: mean(valid.map(r => 1 - r.target)),
+    baselineBalancedAccuracy: 0.5,
+    validationPositiveN: valid.filter(r => r.target === 1).length,
+    validationNegativeN: valid.filter(r => r.target === 0).length,
+    validationHighVolN: highVolN,
+    validationLowVolN: valid.length - highVolN,
+    validationWindows,
+    features,
+  };
+}
+
+export interface UntouchedHoldoutResult {
+  symbol: string;
+  feature: FeatureMetric["key"];
+  timeframeMinutes: number;
+  targetMinutes: number;
+  expectedDirection: AucDirection;
+  sourceCandles: number;
+  holdoutCandles: number;
+  holdoutStartTime: number;
+  holdoutEndTime: number;
+  samples: number;
+  auc: number;
+  aucEquivalent: number;
+  observedDirection: AucDirection;
+  skill: number;
+  pValue: number;
+  ciLow: number;
+  ciHigh: number;
+  pearson: number;
+  pearsonPValue: number;
+  positiveN: number;
+  negativeN: number;
+  inverseAgreement: number;
+  verdict: "PASS" | "FAIL" | "INCONCLUSIVE";
+  protocol: {
+    featureFrozen: boolean;
+    timeframeFrozen: boolean;
+    targetFrozen: boolean;
+    directionFrozen: boolean;
+    selectionUsedHoldout: boolean;
+  };
+}
+
+/**
+ * Evaluates a pre-registered hypothesis on a chronologically separate block.
+ * No threshold, feature, timeframe, direction or target is learned here.
+ * The caller must provide candles ordered oldest -> newest and pass only the
+ * untouched block (plus its own historical context).
+ */
+export function runUntouchedHoldout(
+  candles: Candle[],
+  horizon: ResearchHorizon,
+  granularitySeconds: number,
+  targetMinutes: number,
+  key: FeatureMetric["key"],
+  expectedDirection: AucDirection = "INVERSE",
+): UntouchedHoldoutResult {
+  const sorted = [...candles].sort((a, b) => a.time - b.time);
+  const rows = buildForexFeatureRows(sorted, horizon);
+  if (rows.length < 300) throw new Error(`Holdout insuficiente: ${rows.length} amostras.`);
+
+  const scores = rows.map(r => Number(r[key]));
+  const targets = rows.map(r => r.target);
+  const targetReturns = rows.map(r => r.targetReturn);
+  const ranked = rankScores(scores, targets);
+  const holdoutAuc = ranked.auc;
+  const equivalent = aucEquivalent(holdoutAuc);
+  const observedDirection = aucDirection(holdoutAuc);
+  const skill = equivalent - 0.5;
+  const aucConfidence = aucCi(holdoutAuc, ranked.positives, ranked.negatives);
+  const p = permutationPValueForAuc(ranked.ranks, targets, holdoutAuc, 1000, 91021);
+  const r = pearson(scores, targetReturns);
+  const rp = pearsonPValue(r, rows.length);
+  const expectedMatches = expectedDirection === "INVERSE"
+    ? holdoutAuc < 0.5
+    : expectedDirection === "DIRECT"
+      ? holdoutAuc > 0.5
+      : observedDirection === "NEUTRAL";
+
+  // Pre-registered promotion gate. This is intentionally conservative: the
+  // holdout can confirm or reject the frozen hypothesis, but never tune it.
+  const directionOk = expectedMatches;
+  const effectOk = skill >= 0.025;
+  const significanceOk = p < 0.05 && (aucConfidence.low > 0.5 || aucConfidence.high < 0.5);
+  const verdict: UntouchedHoldoutResult["verdict"] = directionOk && effectOk && significanceOk
+    ? "PASS"
+    : (!directionOk || observedDirection === "NEUTRAL" ? "FAIL" : "INCONCLUSIVE");
+
+  return {
+    symbol: "frxEURUSD",
+    feature: key,
+    timeframeMinutes: granularitySeconds / 60,
+    targetMinutes,
+    expectedDirection,
+    sourceCandles: sorted.length,
+    holdoutCandles: sorted.length,
+    holdoutStartTime: rows[0].time,
+    holdoutEndTime: rows[rows.length - 1].time,
+    samples: rows.length,
+    auc: holdoutAuc,
+    aucEquivalent: equivalent,
+    observedDirection,
+    skill,
+    pValue: p,
+    ciLow: aucConfidence.low,
+    ciHigh: aucConfidence.high,
+    pearson: r,
+    pearsonPValue: rp,
+    positiveN: ranked.positives,
+    negativeN: ranked.negatives,
+    inverseAgreement: expectedDirection === "INVERSE" ? (holdoutAuc < 0.5 ? 1 : 0) : (expectedDirection === observedDirection ? 1 : 0),
+    verdict,
+    protocol: {
+      featureFrozen: key === "volatility20",
+      timeframeFrozen: granularitySeconds === 300,
+      targetFrozen: targetMinutes === 15,
+      directionFrozen: expectedDirection === "INVERSE",
+      selectionUsedHoldout: false,
+    },
+  };
+}
+
+
+
+
+export type FeatureFamily = "TREND" | "MOMENTUM" | "VOLATILITY" | "PRICE_ACTION";
+
+export interface FeatureScreeningRow extends FeatureMetric {
+  family: FeatureFamily;
+  adjustedPValue: number;
+  bonferroniPValue: number;
+  passesFdr05: boolean;
+  passesScreening: boolean;
+}
+
+export interface FeatureScreeningResult {
+  symbol: string;
+  timeframeMinutes: number;
+  targetMinutes: number;
+  candles: number;
+  samples: number;
+  testedFeatures: number;
+  correction: "BENJAMINI_HOCHBERG_FDR_5";
+  rows: FeatureScreeningRow[];
+  screeningCandidates: number;
+}
+
+export const FEATURE_FAMILIES: Record<FeatureMetric["key"], FeatureFamily> = {
+  emaSpread: "TREND",
+  rsiCentered: "MOMENTUM",
+  macdHistogram: "MOMENTUM",
+  adxDirection: "TREND",
+  atrPct: "VOLATILITY",
+  bollingerPosition: "VOLATILITY",
+  bollingerWidthPct: "VOLATILITY",
+  roc: "MOMENTUM",
+  bodyPct: "PRICE_ACTION",
+  rangePct: "PRICE_ACTION",
+  closeLocation: "PRICE_ACTION",
+  volatility20: "VOLATILITY",
+};
+
+/**
+ * Benjamini-Hochberg false-discovery-rate correction.
+ * The input is a fixed, pre-declared family of tests; it never inspects the
+ * holdout and never changes the feature definitions.
+ */
+export function benjaminiHochberg(pValues: number[]): number[] {
+  const m = pValues.length;
+  if (!m) return [];
+  const order = pValues.map((p, i) => ({ p: Math.min(1, Math.max(0, p)), i }))
+    .sort((a, b) => a.p - b.p);
+  const adjusted = new Array<number>(m).fill(1);
+  let running = 1;
+  for (let rank = m; rank >= 1; rank--) {
+    const item = order[rank - 1];
+    const q = Math.min(1, (item.p * m) / rank);
+    running = Math.min(running, q);
+    adjusted[item.i] = running;
+  }
+  return adjusted;
+}
+
+/**
+ * Builds the Phase 3F screening table from ONE fixed timeframe/target result.
+ * It ranks candidates for investigation but never promotes a feature.
+ * Multiple-testing correction is applied across the complete pre-declared
+ * 12-feature catalog, not after looking for a favourite subset.
+ */
+export function buildFeatureScreening(result: ForexResearchResult): FeatureScreeningResult {
+  const ordered = [...result.features].sort((a, b) => a.key.localeCompare(b.key));
+  const adjusted = benjaminiHochberg(ordered.map(f => f.validationAucPValue));
+  const rows = ordered.map((feature, index) => {
+    const q = adjusted[index];
+    const bonferroni = Math.min(1, feature.validationAucPValue * ordered.length);
+    const passesFdr05 = q < 0.05;
+    // Screening gate only: this does NOT confer promotion. It deliberately
+    // requires effect + direction + walk-forward consistency in addition to q.
+    const passesScreening = passesFdr05
+      && feature.validationAucSkill >= 0.015
+      && feature.validationAucDirection !== "NEUTRAL"
+      && feature.walkForwardPositiveWindows >= Math.ceil(Math.max(1, feature.walkForwardWindows) * 2 / 3)
+      && feature.walkForwardDirectionConsistency >= 0.67;
+    return {
+      ...feature,
+      family: FEATURE_FAMILIES[feature.key],
+      adjustedPValue: q,
+      bonferroniPValue: bonferroni,
+      passesFdr05,
+      passesScreening,
+    };
+  }).sort((a, b) => {
+    if (a.passesScreening !== b.passesScreening) return a.passesScreening ? -1 : 1;
+    if (a.adjustedPValue !== b.adjustedPValue) return a.adjustedPValue - b.adjustedPValue;
+    return b.validationAucSkill - a.validationAucSkill;
+  });
+
+  return {
+    symbol: result.symbol,
+    timeframeMinutes: result.timeframeMinutes,
+    targetMinutes: result.targetMinutes,
+    candles: result.candles,
+    samples: result.samples,
+    testedFeatures: rows.length,
+    correction: "BENJAMINI_HOCHBERG_FDR_5",
+    rows,
+    screeningCandidates: rows.filter(r => r.passesScreening).length,
+  };
+}
+
+/**
+ * Builds a fixed-feature matrix from already computed research results.
+ * IMPORTANT: this function never selects the best feature. The caller must
+ * freeze the feature key before treating the matrix as confirmatory evidence.
+ */
+export function buildFeatureStabilityMatrix(
+  results: ForexResearchResult[],
+  key: FeatureMetric["key"],
+): FeatureStabilityMatrix {
+  const cells: FeatureStabilityCell[] = [];
+  for (const result of results) {
+    const feature = result.features.find(f => f.key === key);
+    if (!feature) continue;
+    cells.push({
+      timeframeMinutes: result.timeframeMinutes,
+      targetMinutes: result.targetMinutes,
+      key,
+      validationAuc: feature.validationAuc,
+      validationAucEquivalent: feature.validationAucEquivalent,
+      validationAucDirection: feature.validationAucDirection,
+      validationAucSkill: feature.validationAucSkill,
+      validationAucPValue: feature.validationAucPValue,
+      validationAucCiLow: feature.validationAucCiLow,
+      validationAucCiHigh: feature.validationAucCiHigh,
+      walkForwardWindows: feature.walkForwardWindows,
+      walkForwardPositiveWindows: feature.walkForwardPositiveWindows,
+      walkForwardDirectionConsistency: feature.walkForwardDirectionConsistency,
+      walkForwardMeanSkill: feature.walkForwardMeanSkill,
+      walkForwardMinSkill: feature.walkForwardMinSkill,
+      walkForwardStable: feature.walkForwardStable,
+      stability: feature.stability,
+    });
+  }
+
+  const signalCells = cells.filter(c => c.validationAucSkill >= 0.015 && c.validationAucDirection !== "NEUTRAL");
+  const directionCounts = new Map<AucDirection, number>();
+  signalCells.forEach(c => directionCounts.set(c.validationAucDirection, (directionCounts.get(c.validationAucDirection) ?? 0) + 1));
+  const maxDirectionCount = Math.max(0, ...directionCounts.values());
+
+  return {
+    key,
+    cells,
+    totalCells: cells.length,
+    signalCells: signalCells.length,
+    stableCells: cells.filter(c => c.walkForwardStable).length,
+    meanSkill: mean(cells.map(c => c.validationAucSkill)),
+    minSkill: cells.length ? Math.min(...cells.map(c => c.validationAucSkill)) : 0,
+    signalRate: cells.length ? signalCells.length / cells.length : 0,
+    directionConsistency: signalCells.length ? maxDirectionCount / signalCells.length : 0,
+  };
+}

@@ -82,6 +82,8 @@ export interface StrategyIndicators {
 }
 
 export interface TradeHistory {
+  /** Market namespace; optional for backwards compatibility with old synthetic records. */
+  market?: "synthetic" | "forex";
   id: string;
   time: number;
   symbol: string;

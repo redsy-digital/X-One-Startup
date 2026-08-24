@@ -1,4 +1,5 @@
 import { logger } from "./logger";
+import { Candle } from "../types";
 
 /**
  * Deriv API Service — New API (api.derivws.com)
@@ -18,11 +19,23 @@ export class DerivService {
   private pat: string | null = null;
   private activeAccountId: string | null = null;
   private isDemo: boolean = true;
+  private accountCurrency: string = "USD";
   private listeners: Map<string, Set<(data: any) => void>> = new Map();
   private isIntentionallyDisconnected = false;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private reconnectAttempts = 0;
   private readonly MAX_RECONNECT = 5;
+  private requestSeq = 1000;
+  private pendingRequests = new Map<number, { resolve: (data: any) => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> }>();
+
+  // Heartbeat / connection health (New API). Deriv recommends a ping every
+  // 30–60s to keep WebSocket connections alive through proxies/firewalls.
+  private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+  private heartbeatInFlight = false;
+  private lastMessageAt: number | null = null;
+  private lastPingAt: number | null = null;
+  private lastPongAt: number | null = null;
+  private reconnectCount = 0;
 
   // Epoch: garante que apenas a conexão mais recente processa eventos
   private _epoch = 0;
@@ -37,6 +50,11 @@ export class DerivService {
   setToken(token: string, isDemo: boolean = true) {
     this.pat = token;
     this.isDemo = isDemo;
+  }
+
+  /** Currency of the currently selected authenticated account (New API). */
+  getAccountCurrency(): string {
+    return this.accountCurrency;
   }
 
   connect(accountId?: string, isDemo?: boolean) {
@@ -60,6 +78,8 @@ export class DerivService {
     this.isIntentionallyDisconnected = true;
     this._epoch++; // invalida todas as tentativas em curso
     this._clearReconnectTimer();
+    this._stopHeartbeat();
+    this._rejectPendingRequests("Ligação Deriv encerrada.");
     this._closeSocket();
     this.reconnectAttempts = 0;
   }
@@ -72,9 +92,96 @@ export class DerivService {
     }
   }
 
+  /** New API request/response helper. Uses req_id; echo_req is optional in New API. */
+  private request<T = any>(payload: Record<string, any>, msgType: string, timeoutMs = 15000): Promise<T> {
+    if (!this.isSocketOpen()) return Promise.reject(new Error("WebSocket Deriv não está ligado."));
+    const req_id = ++this.requestSeq;
+    return new Promise<T>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pendingRequests.delete(req_id);
+        reject(new Error(`Timeout à espera de ${msgType} (req_id ${req_id}).`));
+      }, timeoutMs);
+      this.pendingRequests.set(req_id, { resolve, reject, timer });
+      try {
+        this.socket!.send(JSON.stringify({ ...payload, req_id }));
+      } catch (error: any) {
+        clearTimeout(timer);
+        this.pendingRequests.delete(req_id);
+        reject(new Error(error?.message || `Falha ao enviar ${msgType} para a Deriv.`));
+      }
+    });
+  }
+
+  /** New API: lista de símbolos activos. */
+  async getActiveSymbols(contractType?: string[]) {
+    const data = await this.request<any>(
+      { active_symbols: "brief", ...(contractType?.length ? { contract_type: contractType } : {}) },
+      "active_symbols"
+    );
+    if (data.error) throw new Error(data.error.message || "Erro em active_symbols");
+    return Array.isArray(data.active_symbols) ? data.active_symbols : [];
+  }
+
+  /** New API: horários de negociação para todos os símbolos numa data. */
+  async getTradingTimes(date: string = "today") {
+    const data = await this.request<any>({ trading_times: date }, "trading_times");
+    if (data.error) throw new Error(data.error.message || "Erro em trading_times");
+    return data.trading_times ?? {};
+  }
+
+  /** New API: calendário económico nativo. Mantemos o payload da New API isolado aqui. */
+  async getEconomicCalendar(currency?: string, startDate?: number, endDate?: number) {
+    const data = await this.request<any>({
+      economic_calendar: 1,
+      ...(currency ? { currency } : {}),
+      ...(startDate !== undefined ? { start_date: startDate } : {}),
+      ...(endDate !== undefined ? { end_date: endDate } : {}),
+    }, "economic_calendar");
+    if (data.error) throw new Error(data.error.message || "Erro em economic_calendar");
+    return data.economic_calendar ?? { events: [] };
+  }
+
+  /** New API: contratos disponíveis para um símbolo. */
+  async getContractsFor(symbol: string) {
+    const data = await this.request<any>({ contracts_for: symbol }, "contracts_for");
+    if (data.error) throw new Error(data.error.message || "Erro em contracts_for");
+    return data.contracts_for ?? { available: [], hit_count: 0 };
+  }
+
+  /** New API: proposta de preço sem comprar. Usado apenas para validar capacidades. */
+  async probeProposal(
+    symbol: string,
+    contractType: "CALL" | "PUT" | "HIGHER" | "LOWER",
+    amount: number,
+    duration: number,
+    durationUnit: "s" | "m" | "h" = "m",
+    currency = this.accountCurrency,
+    barrier?: string
+  ) {
+    const data = await this.request<any>({
+      proposal: 1, amount, basis: "stake", contract_type: contractType, currency,
+      duration, duration_unit: durationUnit, underlying_symbol: symbol,
+      ...(barrier ? { barrier } : {}),
+    }, "proposal");
+    if (data.error) throw new Error(data.error.message || "Erro em proposal");
+    return data.proposal;
+  }
+
   /** Verifica se o socket está realmente aberto e pronto para enviar pedidos. */
   isSocketOpen(): boolean {
     return this.socket?.readyState === WebSocket.OPEN;
+  }
+
+  /** Snapshot simples do estado da ligação para diagnósticos/UI. */
+  getConnectionHealth() {
+    return {
+      connected: this.isSocketOpen(),
+      lastMessageAt: this.lastMessageAt,
+      lastPingAt: this.lastPingAt,
+      lastPongAt: this.lastPongAt,
+      reconnectCount: this.reconnectCount,
+      pendingRequests: this.pendingRequests.size,
+    };
   }
 
   /**
@@ -122,6 +229,35 @@ export class DerivService {
    * Em caso de erro (ex.: granularity inválida), a resposta vem com
    * msg_type "ticks_history" (o nome do campo do pedido) em vez de "candles".
    */
+  /** New API: busca candles históricos como Promise, sem subscrição. */
+  async getHistoricalCandles(
+    symbol: string,
+    count: number,
+    granularitySeconds: number,
+    end: number | "latest" = "latest"
+  ): Promise<Candle[]> {
+    const data = await this.request<any>({
+      ticks_history: symbol,
+      end,
+      count,
+      style: "candles",
+      granularity: granularitySeconds,
+      adjust_start_time: 1,
+    }, "ticks_history", 20000);
+    if (data.error) throw new Error(data.error.message || "Erro em ticks_history");
+    if (!Array.isArray(data.candles)) return [];
+    return data.candles.map((c: any) => ({
+      time: Number(c.epoch),
+      open: Number(c.open),
+      high: Number(c.high),
+      low: Number(c.low),
+      close: Number(c.close),
+    })).filter((c: Candle) =>
+      Number.isFinite(c.time) && Number.isFinite(c.open) && Number.isFinite(c.high) &&
+      Number.isFinite(c.low) && Number.isFinite(c.close)
+    );
+  }
+
   requestTicksHistory(symbol: string, count: number, granularitySeconds: number, end: number | "latest" = "latest") {
     this.send({
       ticks_history: symbol,
@@ -179,34 +315,6 @@ export class DerivService {
     this.send({ proposal_open_contract: 1, subscribe: 1 });
   }
 
-  /**
-   * Fase 2 do plano multi-mercado — pede os contratos disponíveis para um
-   * símbolo (tipos de contrato, duração mín/máx por tipo, etc.). É a única
-   * forma fiável de confirmar os limites reais de Forex (ex.: frxEURUSD)
-   * em vez de assumir a partir da documentação genérica.
-   * Resposta chega com msg_type "contracts_for" — ouvir via
-   * derivService.on("contracts_for", ...). Não precisa de autorização
-   * (chamada pública), mas precisa de socket aberto.
-   *
-   * NOTA (18/08/2026): tinha um campo `currency` aqui — a API rejeitou ao
-   * vivo com "Properties not allowed: currency." Faz sentido: tipos de
-   * contrato e duração não dependem de moeda (isso é só relevante para
-   * `proposal`, que já não muda). Testado e confirmado sem o campo.
-   */
-  getContractsFor(symbol: string) {
-    this.send({ contracts_for: symbol });
-  }
-
-  /**
-   * Fase 2 — lista os símbolos negociáveis disponíveis para a conta ligada
-   * (inclui Forex, com o mesmo campo `market: "forex"`). Útil para
-   * confirmar o nome exacto/pip size dos pares antes de os usar.
-   * Resposta chega com msg_type "active_symbols".
-   */
-  getActiveSymbols(productType: "basic" | "multipliers" = "basic") {
-    this.send({ active_symbols: "full", product_type: productType });
-  }
-
   async fetchAccounts(): Promise<any[]> {
     if (!this.pat) throw new Error("[Deriv] No PAT set");
 
@@ -233,6 +341,7 @@ export class DerivService {
       const demo = accounts.find((a) => this._isDemo(a)) ?? accounts[0];
       this.activeAccountId = demo.account_id;
       this.isDemo = this._isDemo(demo);
+      this.accountCurrency = String(demo.currency ?? this.accountCurrency);
       this._connectViaOTP(this.activeAccountId);
     } catch (e: any) {
       if (epoch === this._epoch) this._emitAuthError(e.message);
@@ -291,6 +400,8 @@ export class DerivService {
       if (epoch !== this._epoch) return;
       console.log(`[Deriv] Connected (epoch ${epoch})`);
       this.reconnectAttempts = 0;
+      this.lastMessageAt = Date.now();
+      this._startHeartbeat(epoch);
 
       try {
         const accounts = await this.fetchAccounts();
@@ -299,11 +410,12 @@ export class DerivService {
         const balance = Number(account?.balance ?? 0);
         const accountType = this._isDemo(account) ? "Demo" : "Real";
         logger.system(`✓ Autorizado | ${accountId} [${accountType}] | Saldo: $${balance.toFixed(2)}`);
+        this.accountCurrency = String(account?.currency ?? this.accountCurrency);
         this._emit("authorize", {
           authorize: {
             balance,
             loginid: account?.account_id ?? accountId,
-            currency: account?.currency ?? "USD",
+            currency: this.accountCurrency,
             is_virtual: this._isDemo(account) ? 1 : 0,
           },
         });
@@ -311,17 +423,31 @@ export class DerivService {
         if (epoch !== this._epoch) return;
         logger.system(`✓ Autorizado | ${accountId} | (saldo não disponível)`);
         this._emit("authorize", {
-          authorize: { balance: 0, loginid: accountId, currency: "USD", is_virtual: this.isDemo ? 1 : 0 },
+          authorize: { balance: 0, loginid: accountId, currency: this.accountCurrency, is_virtual: this.isDemo ? 1 : 0 },
         });
       }
     };
 
     this.socket.onmessage = (event) => {
       if (epoch !== this._epoch) return;
+      this.lastMessageAt = Date.now();
       try {
         const data = JSON.parse(event.data) as DerivMessage;
+        if (data.msg_type === "ping" && data.req_id !== undefined) {
+          this.lastPongAt = Date.now();
+          this.heartbeatInFlight = false;
+        }
         if (this._debugLogAll) {
           logger.system(`[Debug] Recebido: msg_type=${data.msg_type ?? "(nenhum)"} ${data.error ? `| error=${data.error.message}` : ""}`);
+        }
+        if (data.req_id !== undefined) {
+          const pending = this.pendingRequests.get(Number(data.req_id));
+          if (pending) {
+            clearTimeout(pending.timer);
+            this.pendingRequests.delete(Number(data.req_id));
+            if (data.error) pending.reject(new Error(data.error.message || `Deriv API error (${data.error.code || "unknown"})`));
+            else pending.resolve(data);
+          }
         }
         if (data.msg_type) this._emit(data.msg_type, data);
       } catch (e) {
@@ -337,13 +463,21 @@ export class DerivService {
 
     this.socket.onclose = (event) => {
       if (epoch !== this._epoch) return; // ignorar close de socket antigo
+      this._stopHeartbeat();
+      this._rejectPendingRequests(`WebSocket Deriv desconectado (code ${event.code}).`);
+      this.heartbeatInFlight = false;
       console.log(`[Deriv] Closed (code ${event.code}, epoch ${epoch})`);
-      if (!this.isIntentionallyDisconnected) logger.system(`WebSocket desconectado (code ${event.code}) — a reconectar...`);
-      if (!this.isIntentionallyDisconnected) this._scheduleReconnect(epoch);
+      if (!this.isIntentionallyDisconnected) {
+        logger.system(`WebSocket desconectado (code ${event.code}) — a reconectar...`);
+        this._scheduleReconnect(epoch);
+      }
     };
   }
 
   private _closeSocket() {
+    this._stopHeartbeat();
+    this.heartbeatInFlight = false;
+    this._rejectPendingRequests("WebSocket Deriv encerrado.");
     if (!this.socket) return;
     // Remove handlers ANTES de fechar para não disparar _scheduleReconnect
     this.socket.onopen = null;
@@ -359,6 +493,63 @@ export class DerivService {
     this.socket = null;
   }
 
+
+  /**
+   * New API heartbeat. A ping is sent every 30s, within Deriv's documented
+   * 30–60s keep-alive window. If a ping cannot be answered, the socket is
+   * closed so the normal reconnect path can establish a fresh OTP/WebSocket.
+   */
+  private _startHeartbeat(epoch: number) {
+    this._stopHeartbeat();
+    this.heartbeatTimer = setInterval(() => {
+      if (epoch !== this._epoch || !this.isSocketOpen()) {
+        this._stopHeartbeat();
+        return;
+      }
+
+      if (this.heartbeatInFlight) {
+        logger.error("Heartbeat Deriv sem resposta — a reiniciar a ligação.");
+        this._closeSocket();
+        if (!this.isIntentionallyDisconnected && epoch === this._epoch) {
+          this._scheduleReconnect(epoch);
+        }
+        return;
+      }
+
+      this.heartbeatInFlight = true;
+      this.lastPingAt = Date.now();
+      this.request<any>({ ping: 1 }, "ping", 10000)
+        .then(() => {
+          this.lastPongAt = Date.now();
+          this.heartbeatInFlight = false;
+        })
+        .catch(() => {
+          this.heartbeatInFlight = false;
+          if (epoch !== this._epoch || this.isIntentionallyDisconnected) return;
+          logger.error("Heartbeat Deriv sem resposta — a reiniciar a ligação.");
+          this._closeSocket();
+          this._scheduleReconnect(epoch);
+        });
+    }, 30000);
+  }
+
+  private _stopHeartbeat() {
+    if (this.heartbeatTimer) {
+      clearInterval(this.heartbeatTimer);
+      this.heartbeatTimer = null;
+    }
+  }
+
+  private _rejectPendingRequests(message: string) {
+    if (!this.pendingRequests.size) return;
+    const pending = Array.from(this.pendingRequests.values());
+    this.pendingRequests.clear();
+    pending.forEach(({ reject, timer }) => {
+      clearTimeout(timer);
+      reject(new Error(message));
+    });
+  }
+
   private _scheduleReconnect(epoch: number) {
     if (this.reconnectAttempts >= this.MAX_RECONNECT) {
       console.warn("[Deriv] Max reconnect attempts reached");
@@ -366,6 +557,7 @@ export class DerivService {
     }
     const delay = Math.min(2000 * Math.pow(2, this.reconnectAttempts), 30000);
     this.reconnectAttempts++;
+    this.reconnectCount++;
     console.log(`[Deriv] Reconnecting in ${delay}ms (attempt ${this.reconnectAttempts})`);
     this.reconnectTimer = setTimeout(() => {
       if (epoch !== this._epoch) return; // superseded por nova conexão

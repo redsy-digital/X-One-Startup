@@ -6,3 +6,5 @@ export { useSettingsStore } from "./useSettingsStore";
 export type { BotSettings } from "./useSettingsStore";
 export { useSignalStore } from "./useSignalStore";
 export { useSessionStore } from "./useSessionStore";
+
+export { useForexRiskStore } from "./useForexRiskStore";
