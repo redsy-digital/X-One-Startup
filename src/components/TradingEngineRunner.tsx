@@ -2,7 +2,6 @@ import { useEffect } from "react";
 import { useConnectionStore, useBotStore, useMarketStore, useSettingsStore } from "../store";
 import { useDigitsEngine } from "../digits/useDigitsEngine";
 import { useAccumulatorsEngine } from "../accumulators/useAccumulatorsEngine";
-import { useAccumulatorsSettingsStore } from "../store/useAccumulatorsSettingsStore";
 import { useSyntheticTabsStore } from "../store/useSyntheticTabsStore";
 import { forexRuntimeIntegrationV1 } from "../forex/runtime";
 
@@ -21,7 +20,6 @@ export const TradingEngineRunner = () => {
   const { isBotRunning, setLossCooldown } = useBotStore();
   const { symbol, market } = useMarketStore();
   const { settings } = useSettingsStore();
-  const { settings: accuSettings } = useAccumulatorsSettingsStore();
   const { tabs, runningTabId, setRunningTab } = useSyntheticTabsStore();
   const runningTabType = tabs.find((t) => t.id === runningTabId)?.type ?? null;
 
@@ -70,21 +68,24 @@ export const TradingEngineRunner = () => {
   });
 
   // ── Synthetic → Accumulators V1 ──────────────────────────────────────────
+  // Perfil de risco partilhado com Digits (settings do useSettingsStore) —
+  // growthRate/tickCount vêm das duas colunas reaproveitadas em bot_settings
+  // (ver comentário em useSettingsStore.ts).
   useAccumulatorsEngine({
-    growthRate: accuSettings.growthRate,
-    tickCount: accuSettings.tickCount,
+    growthRate: settings.accumulatorsGrowthRate,
+    tickCount: settings.accumulatorsTickCount,
     symbol,
     isAuthorized,
     isBotRunning: isBotRunning && market === "synthetic" && runningTabType === "accumulators",
     balance,
-    stake: accuSettings.stake,
-    targetProfit: accuSettings.targetProfit,
-    stopLoss: accuSettings.stopLoss,
-    useMartingale: accuSettings.useMartingale,
-    martingaleMultiplier: accuSettings.martingaleMultiplier,
-    maxMartingaleSteps: accuSettings.maxMartingaleSteps,
-    maxConsecutiveLosses: accuSettings.maxConsecutiveLosses,
-    cooldownAfterLoss: accuSettings.cooldownAfterLoss,
+    stake: settings.stake,
+    targetProfit: settings.targetProfit,
+    stopLoss: settings.stopLoss,
+    useMartingale: settings.useMartingale,
+    martingaleMultiplier: settings.martingaleMultiplier,
+    maxMartingaleSteps: settings.maxMartingaleSteps,
+    maxConsecutiveLosses: settings.maxConsecutiveLosses,
+    cooldownAfterLoss: settings.cooldownAfterLoss,
   });
 
   return null;

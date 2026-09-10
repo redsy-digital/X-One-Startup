@@ -12,7 +12,5 @@ export type { DigitsContractType, DigitsConfig, DigitsRiskConfig, DigitsRuntimeS
 
 export { useAccumulatorsStore } from "../accumulators/store";
 export type { AccumulatorsConfig, AccumulatorsRiskConfig, AccumulatorsRuntimeState, AccumulatorsGrowthRate } from "../accumulators/types";
-export { useAccumulatorsSettingsStore, DEFAULT_ACCUMULATORS_SETTINGS } from "./useAccumulatorsSettingsStore";
-export type { AccumulatorsSettings } from "./useAccumulatorsSettingsStore";
 export { useSyntheticTabsStore } from "./useSyntheticTabsStore";
 export type { SyntheticTab, SyntheticTabType } from "./useSyntheticTabsStore";

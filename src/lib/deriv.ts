@@ -448,7 +448,11 @@ export class DerivService {
       basis: "stake",
       contract_type: "ACCU",
       currency: this.accountCurrency,
-      symbol,
+      // Esta conta usa a versão da New API em que "symbol" foi renomeado
+      // para "underlying_symbol" (o mesmo campo já usado por
+      // getDigitsProposal/probeProposal acima) — usar "symbol" aqui causa
+      // "Input validation failed: Properties not allowed: symbol.".
+      underlying_symbol: symbol,
       growth_rate: growthRate,
       ...(takeProfit && takeProfit > 0 ? { limit_order: { take_profit: takeProfit } } : {}),
     }, "proposal", 15000);

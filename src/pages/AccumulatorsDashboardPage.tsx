@@ -19,13 +19,12 @@ import { SYMBOLS } from "../constants";
 import { logger, LogEntry } from "../lib/logger";
 import { getTradeHistory } from "../lib/storage";
 import { TradeHistory } from "../types";
-import { useConnectionStore, useBotStore, useMarketStore } from "../store";
+import { useConnectionStore, useBotStore, useMarketStore, useSettingsStore } from "../store";
 import { useSessionStore } from "../store/useSessionStore";
 import { useSyntheticTabsStore } from "../store/useSyntheticTabsStore";
 import { useAccumulatorsStore } from "../accumulators/store";
 import { getActiveAccumulatorsEngine } from "../accumulators/useAccumulatorsEngine";
 import { ACCUMULATORS_GROWTH_RATES, growthRateLabel, type AccumulatorsGrowthRate } from "../accumulators/types";
-import { useAccumulatorsSettingsStore } from "../store/useAccumulatorsSettingsStore";
 
 // ── Helpers locais (duplicados de propósito a partir de DashboardPage.tsx
 // para evitar import circular — Digits fica completamente intocado). ──────
@@ -75,7 +74,7 @@ const StatusPill = ({ label, value, className = "" }: { label: string; value: st
 
 // ── Selectores principais Accumulators ────────────────────────────────────
 const AccumulatorsSelectors = () => {
-  const { settings, updateSettings } = useAccumulatorsSettingsStore();
+  const { settings, updateSettings } = useSettingsStore();
   const { isBotRunning } = useBotStore();
 
   return (
@@ -92,9 +91,9 @@ const AccumulatorsSelectors = () => {
         <div className="space-y-1">
           <label className="text-[9px] text-muted-foreground uppercase font-black">Growth Rate</label>
           <Select
-            value={String(settings.growthRate)}
+            value={String(settings.accumulatorsGrowthRate)}
             disabled={isBotRunning}
-            onValueChange={(value) => updateSettings({ growthRate: Number(value) as AccumulatorsGrowthRate })}
+            onValueChange={(value) => updateSettings({ accumulatorsGrowthRate: Number(value) as AccumulatorsGrowthRate })}
           >
             <SelectTrigger className="w-full bg-black/30 border-white/10 h-9 text-[11px]">
               <SelectValue />
@@ -110,13 +109,13 @@ const AccumulatorsSelectors = () => {
         <div className="space-y-1">
           <label className="text-[9px] text-muted-foreground uppercase font-black">Fechar após (ticks)</label>
           <Input
-            type="number" min={1} max={500} step="1"
-            value={settings.tickCount}
+            type="number" min={1} max={20} step="1"
+            value={settings.accumulatorsTickCount}
             disabled={isBotRunning}
             onChange={(e) => {
               const raw = Math.round(Number(e.target.value));
               if (!Number.isFinite(raw)) return;
-              updateSettings({ tickCount: Math.max(1, Math.min(500, raw)) });
+              updateSettings({ accumulatorsTickCount: Math.max(1, Math.min(20, raw)) });
             }}
             className="bg-black/30 border-white/10 h-9 text-[11px]"
           />
@@ -132,7 +131,7 @@ const AccumulatorsSelectors = () => {
 
 // ── Modal de gestão de banca Accumulators ─────────────────────────────────
 const AccumulatorsConfigModal = ({ onClose }: { onClose: () => void }) => {
-  const { settings, updateSettings } = useAccumulatorsSettingsStore();
+  const { settings, updateSettings } = useSettingsStore();
   const { isBotRunning } = useBotStore();
   const s = settings;
 
@@ -231,7 +230,7 @@ export const AccumulatorsDashboardBody = ({ tabId }: { tabId: string }) => {
   const { runningTabId, setRunningTab } = useSyntheticTabsStore();
   const isOwner = runningTabId === tabId;
   const { symbol, setSymbol, candles, ticks, timeframe, setTimeframe } = useMarketStore();
-  const { settings } = useAccumulatorsSettingsStore();
+  const { settings } = useSettingsStore();
   const { runtime } = useAccumulatorsStore();
   const { wins, losses, pnl: rawPnl, modal, closeModal } = useSessionStore();
   const pnl = Number(rawPnl) || 0;
@@ -335,12 +334,12 @@ export const AccumulatorsDashboardBody = ({ tabId }: { tabId: string }) => {
                 <Target className="w-4 h-4 text-blue-400" />
                 <p className="text-[9px] text-muted-foreground uppercase font-black tracking-widest">Configuração da operação</p>
               </div>
-              <Badge className="bg-blue-500/10 text-blue-300 border-blue-500/20 text-[8px]">{growthRateLabel(settings.growthRate)}</Badge>
+              <Badge className="bg-blue-500/10 text-blue-300 border-blue-500/20 text-[8px]">{growthRateLabel(settings.accumulatorsGrowthRate)}</Badge>
             </div>
             <div className="grid grid-cols-2 gap-2">
               <StatusPill label="Contrato" value="ACCU" />
-              <StatusPill label="Fecha em" value={`${settings.tickCount} ticks`} />
-              <StatusPill label="Growth Rate" value={growthRateLabel(settings.growthRate)} />
+              <StatusPill label="Fecha em" value={`${settings.accumulatorsTickCount} ticks`} />
+              <StatusPill label="Growth Rate" value={growthRateLabel(settings.accumulatorsGrowthRate)} />
               <StatusPill label="Próxima stake" value={`$${(runtime.currentStake || settings.stake).toFixed(2)}`} />
             </div>
           </NeonCard>
@@ -357,7 +356,7 @@ export const AccumulatorsDashboardBody = ({ tabId }: { tabId: string }) => {
               </Badge>
             </div>
             <div className="grid grid-cols-2 gap-2">
-              <StatusPill label="Ticks decorridos" value={hasActiveContract ? `${runtime.ticksElapsed} / ${settings.tickCount}` : "—"} />
+              <StatusPill label="Ticks decorridos" value={hasActiveContract ? `${runtime.ticksElapsed} / ${settings.accumulatorsTickCount}` : "—"} />
               <StatusPill label="Valor do contrato" value={runtime.currentContractValue != null ? `$${runtime.currentContractValue.toFixed(2)}` : "—"} />
               <StatusPill label="Stake na entrada" value={runtime.currentStakeInTrade != null ? `$${runtime.currentStakeInTrade.toFixed(2)}` : "—"} />
               <StatusPill label="Contrato ativo" value={runtime.activeContractId ?? "—"} className={runtime.isManualTrade && hasActiveContract ? "border-amber-500/30" : ""} />
@@ -419,7 +418,7 @@ export const AccumulatorsDashboardBody = ({ tabId }: { tabId: string }) => {
               <StatusPill label="Ticks" value={runtime.lastTicks != null ? String(runtime.lastTicks) : "—"} />
               <StatusPill label="Resultado" value={runtime.lastResult === "WON" ? "WIN" : runtime.lastResult === "LOST" ? "LOSS" : "—"}
                 className={runtime.lastResult === "WON" ? "border-green-500/20" : runtime.lastResult === "LOST" ? "border-red-500/20" : ""} />
-              <StatusPill label="Growth Rate" value={growthRateLabel(settings.growthRate)} />
+              <StatusPill label="Growth Rate" value={growthRateLabel(settings.accumulatorsGrowthRate)} />
             </div>
             {runtime.lastProfit != null && (
               <p className={cn("text-right text-sm font-black", runtime.lastProfit >= 0 ? "text-green-400" : "text-red-400")}>
