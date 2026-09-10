@@ -56,6 +56,8 @@ const saveToSupabase = async (trade: TradeHistory) => {
       const { error } = await supabase
         .from("trade_history")
         .update({
+          market: trade.market ?? null,
+          target_digit: trade.targetDigit ?? null,
           status: trade.status,
           profit: trade.profit ?? null,
           entry_price: trade.entryPrice ?? null,
@@ -76,6 +78,8 @@ const saveToSupabase = async (trade: TradeHistory) => {
         time: trade.time,
         symbol: trade.symbol,
         type: trade.type,
+        market: trade.market ?? null,
+        target_digit: trade.targetDigit ?? null,
         stake: trade.stake,
         status: trade.status,
         profit: trade.profit ?? null,
@@ -151,6 +155,8 @@ export const loadHistoryFromSupabase = async (): Promise<TradeHistory[]> => {
       time: row.time,
       symbol: row.symbol,
       type: row.type,
+      market: row.market ?? undefined,
+      targetDigit: row.target_digit !== null ? Number(row.target_digit) : undefined,
       stake: Number(row.stake),
       status: row.status,
       profit: row.profit !== null ? Number(row.profit) : undefined,
@@ -225,9 +231,9 @@ export const exportToPDF = async (history: TradeHistory[]) => {
     const tradeTime = new Date(trade.time).toLocaleString([], { dateStyle: "short", timeStyle: "short" });
     const result = trade.status === "WON" ? "WIN" : trade.status === "PENDING" ? "PENDENTE" : "LOSS";
     const profit = `$${(trade.profit || 0).toFixed(2)}`;
-    const confidence = `${trade.confidence || 0}%`;
-    const score = `${trade.score || 0}`;
-    const mkt = trade.indicators?.marketCondition || "N/A";
+    const confidence = trade.confidence != null ? `${trade.confidence}%` : "—";
+    const score = trade.score != null ? `${trade.score}` : "—";
+    const mkt = trade.market === "synthetic" ? "DIGITS" : trade.market === "forex" ? "FOREX" : (trade.indicators?.marketCondition || "N/A");
     const reason = trade.indicators?.reason || "Análise padrão";
     const structure = trade.indicators?.structureId || "N/A";
     const freshness = trade.indicators?.trendFreshnessScore?.toFixed(1) || "0";

@@ -2,8 +2,8 @@ import React, { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { motion, AnimatePresence } from "motion/react";
 import {
-  Power, Settings2, ArrowUpRight, ArrowDownRight,
-  TrendingUp, TrendingDown, X, Trophy, AlertTriangle
+  Power, Settings2, ArrowUpRight, ArrowDownRight, X, Trophy, AlertTriangle, CircleDot, ChevronLeft, ChevronRight,
+  Activity, Target, WalletCards, Gauge, Repeat2, BarChart3, Clock3
 } from "lucide-react";
 import { cn } from "../lib/utils";
 import { NeonCard } from "../components/NeonCard";
@@ -18,16 +18,21 @@ import { TradingChart } from "../components/TradingChart";
 import { ErrorBoundary } from "../components/ErrorBoundary";
 import { MarketSelectScreen } from "../components/MarketSelectScreen";
 import { ForexDashboardPage } from "./ForexDashboardPage";
+import { AccumulatorsDashboardBody } from "./AccumulatorsDashboardPage";
+import { CreateSyntheticTabScreen } from "../components/CreateSyntheticTabScreen";
+import { SyntheticTabsBar } from "../components/SyntheticTabsBar";
 import { SYMBOLS } from "../constants";
 import { logger, LogEntry } from "../lib/logger";
 import { getTradeHistory } from "../lib/storage";
-import { TradeHistory, StrategyProfile } from "../types";
-import { STRATEGY_PROFILES } from "../lib/strategy";
+import { TradeHistory } from "../types";
 import {
   useConnectionStore, useBotStore, useMarketStore,
-  useSettingsStore, useSignalStore
+  useSettingsStore
 } from "../store";
 import { useSessionStore } from "../store/useSessionStore";
+import { useDigitsStore } from "../digits/store";
+import { useSyntheticTabsStore } from "../store/useSyntheticTabsStore";
+import { DIGITS_CONTRACTS, digitsContractNeedsDigit, digitsContractLabel, type DigitsContractType, type DigitsTargetMode } from "../digits/types";
 
 // ── Timer de sessão ───────────────────────────────────────────────────────────
 // Lê sessionStartedAt/sessionFrozenElapsed do useBotStore (global) em vez de
@@ -69,31 +74,180 @@ function useLogEntries(max = 500) {
   return entries;
 }
 
-// ── Modal Acertos ─────────────────────────────────────────────────────────────
-const AcertosModal = ({ onClose }: { onClose: () => void }) => {
-  const { settings, updateSettings, changeProfile } = useSettingsStore();
+// ── Selectores principais Digits ─────────────────────────────────────────────
+// Ficam fora do modal de gestão de banca para evitar o problema de interacção
+// dos Select portalled sobre a camada do modal.
+const DigitsSelectors = () => {
+  const { settings, updateSettings } = useSettingsStore();
+  const { isBotRunning } = useBotStore();
+  const isParityContract = settings.digitsContract === "DIGITEVEN" || settings.digitsContract === "DIGITODD";
+
+  return (
+    <NeonCard variant="purple" className="p-4 space-y-3">
+      <div className="flex items-center justify-between gap-3">
+        <div>
+          <p className="text-[9px] text-muted-foreground uppercase font-black tracking-widest">Configuração Digits</p>
+          <p className="text-[11px] font-black text-white mt-1">Entrada determinística · sem previsão</p>
+        </div>
+        <CircleDot className="w-4 h-4 text-purple-400" />
+      </div>
+
+      <div className="grid grid-cols-2 gap-3">
+        <div className="space-y-1">
+          <label className="text-[9px] text-muted-foreground uppercase font-black">Contrato</label>
+          <Select
+            value={settings.digitsContract}
+            disabled={isBotRunning}
+            onValueChange={(value) => updateSettings({ digitsContract: value as DigitsContractType })}
+          >
+            <SelectTrigger className="w-full bg-black/30 border-white/10 h-9 text-[11px]">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent className="bg-[#111114] border-white/10 text-white">
+              {DIGITS_CONTRACTS.map((contract) => (
+                <SelectItem key={contract.value} value={contract.value}>
+                  {contract.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+
+        <div className={cn("space-y-1", isParityContract && "opacity-90")}>
+          <label className="text-[9px] text-muted-foreground uppercase font-black">
+            {isParityContract ? "Paridade" : "Dígito alvo"}
+          </label>
+          <Select
+            value={isParityContract ? (settings.digitsTargetDigit === 1 ? "odd" : "even") : String(settings.digitsTargetDigit)}
+            disabled={isBotRunning}
+            onValueChange={(value) => {
+              if (isParityContract) {
+                updateSettings({ digitsTargetDigit: value === "odd" ? 1 : 0 });
+              } else {
+                updateSettings({ digitsTargetDigit: value === "random" || value === "follow_up" ? value : Number(value) });
+              }
+            }}
+          >
+            <SelectTrigger className="w-full bg-black/30 border-white/10 h-9 text-[11px]">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent className="bg-[#111114] border-white/10 text-white">
+              {isParityContract ? (
+                <>
+                  <SelectItem value="even">Par</SelectItem>
+                  <SelectItem value="odd">Ímpar</SelectItem>
+                </>
+              ) : (
+                <>
+                  {Array.from({ length: 10 }, (_, digit) => (
+                    <SelectItem key={digit} value={String(digit)}>{digit}</SelectItem>
+                  ))}
+                  <SelectItem value="random">Random</SelectItem>
+                  <SelectItem value="follow_up">Follow Up</SelectItem>
+                </>
+              )}
+            </SelectContent>
+          </Select>
+        </div>
+      </div>
+
+      <p className="text-[9px] text-muted-foreground/60">
+        {isParityContract ? "Escolhe se o último dígito deve ser par ou ímpar." : "Escolhe um dígito, Random para variar o alvo ou Follow Up para usar o último dígito do contrato anterior."}
+      </p>
+    </NeonCard>
+  );
+};
+
+const digitModeLabel = (target: DigitsTargetMode) => {
+  if (target === "random") return "Random";
+  if (target === "follow_up") return "Follow Up";
+  return "Fixo";
+};
+
+const digitsTargetText = (contract: DigitsContractType | null, target: number | null) => {
+  if (!contract) return "—";
+  if (!digitsContractNeedsDigit(contract)) return digitsContractLabel(contract, 0);
+  return target == null ? digitsContractLabel(contract, "random") : digitsContractLabel(contract, target);
+};
+
+const getLastTickDigit = (price: number | null) => {
+  if (price == null || !Number.isFinite(price)) return null;
+  const fixed = price.toFixed(2);
+  const digits = fixed.replace(/\D/g, "");
+  return digits.length ? Number(digits[digits.length - 1]) : null;
+};
+
+const RuntimeMetric = ({ label, value, accent = "text-white" }: { label: string; value: string; accent?: string }) => (
+  <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="rounded-xl border border-white/5 bg-white/5 p-2.5 text-center min-w-0">
+    <p className="text-[8px] uppercase text-muted-foreground font-bold tracking-wide truncate">{label}</p>
+    <p className={cn("text-xs font-black mt-1 truncate", accent)}>{value}</p>
+  </motion.div>
+);
+
+const StatusPill = ({ label, value, className = "" }: { label: string; value: string; className?: string }) => (
+  <div className={cn("rounded-xl border border-white/5 bg-black/20 px-3 py-2", className)}>
+    <p className="text-[8px] uppercase text-muted-foreground font-black">{label}</p>
+    <p className="text-[11px] font-black text-white mt-0.5 truncate">{value}</p>
+  </div>
+);
+
+// ── Text Stepper ─────────────────────────────────────────────────────────────
+// Controles compactos sem portal: ideais para o modal de gestão de banca.
+const TextStepper = ({
+  label, value, disabled, onPrevious, onNext,
+}: {
+  label: string;
+  value: string;
+  disabled?: boolean;
+  onPrevious: () => void;
+  onNext: () => void;
+}) => (
+  <div className="space-y-1">
+    <label className="text-[9px] text-muted-foreground uppercase font-black">{label}</label>
+    <div className="flex items-center h-8 rounded-lg border border-white/10 bg-black/30 overflow-hidden">
+      <button
+        type="button"
+        disabled={disabled}
+        onClick={onPrevious}
+        aria-label={`${label} anterior`}
+        className="h-full w-8 shrink-0 flex items-center justify-center text-muted-foreground hover:text-white hover:bg-white/5 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+      >
+        <ChevronLeft className="w-3.5 h-3.5" />
+      </button>
+      <div className="flex-1 min-w-0 text-center text-[10px] font-black text-white truncate px-1">
+        {value}
+      </div>
+      <button
+        type="button"
+        disabled={disabled}
+        onClick={onNext}
+        aria-label={`${label} próximo`}
+        className="h-full w-8 shrink-0 flex items-center justify-center text-muted-foreground hover:text-white hover:bg-white/5 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+      >
+        <ChevronRight className="w-3.5 h-3.5" />
+      </button>
+    </div>
+  </div>
+);
+
+// ── Modal de gestão de banca Digits ──────────────────────────────────────────
+const DigitsConfigModal = ({ onClose }: { onClose: () => void }) => {
+  const { settings, updateSettings } = useSettingsStore();
   const s = settings;
+
   const row = (label: string, key: keyof typeof s, step = "1", min = 0, max?: number) => (
     <div className="space-y-1" key={label}>
       <label className="text-[9px] text-muted-foreground uppercase font-black">{label}</label>
       <Input type="number" step={step} min={min} max={max} value={s[key] as number}
+        disabled={isBotRunningGlobally()}
         onChange={e => {
           const raw = Number(e.target.value);
-          // Campo vazio ou não-numérico: ignora em vez de gravar NaN.
-          // Um NaN aqui (ex.: em stopLoss) faz a comparação de paragem
-          // da sessão nunca ser verdadeira — desliga a proteção em silêncio.
-          if (Number.isNaN(raw)) return;
-          let clamped = Math.max(min, raw);
-          if (max !== undefined) clamped = Math.min(max, clamped);
-          updateSettings({ [key]: clamped });
+          if (!Number.isFinite(raw)) return;
+          let value = Math.max(min, raw);
+          if (max !== undefined) value = Math.min(max, value);
+          updateSettings({ [key]: value });
         }}
         className="bg-black/30 border-white/10 h-8 text-[11px]" />
-    </div>
-  );
-  const tog = (label: string, key: keyof typeof s) => (
-    <div className="flex items-center justify-between py-1" key={label}>
-      <span className="text-[11px] text-muted-foreground font-bold">{label}</span>
-      <Switch checked={s[key] as boolean} onCheckedChange={v => updateSettings({ [key]: v })} className="scale-90" />
     </div>
   );
 
@@ -103,54 +257,92 @@ const AcertosModal = ({ onClose }: { onClose: () => void }) => {
         className="w-full max-w-sm bg-[#111114] border border-purple-500/20 rounded-2xl shadow-2xl overflow-hidden">
         <div className="flex items-center justify-between px-5 py-4 border-b border-white/5">
           <p className="font-black text-sm uppercase tracking-widest flex items-center gap-2 text-white">
-            <Settings2 className="w-4 h-4 text-purple-400" /> Acertos
+            <CircleDot className="w-4 h-4 text-purple-400" /> Digits V1
           </p>
           <Button variant="ghost" size="icon" onClick={onClose} className="h-7 w-7 text-muted-foreground"><X className="w-4 h-4" /></Button>
         </div>
-        <div className="p-5 space-y-4 max-h-[70vh] overflow-y-auto">
-          <div className="space-y-1">
-            <label className="text-[9px] text-muted-foreground uppercase font-black">Perfil IA</label>
-            <div className="grid grid-cols-3 gap-2">
-              {([
-                ["conservative", "Conservador"],
-                ["balanced", "Equilibrado"],
-                ["aggressive", "Agressivo"],
-              ] as [StrategyProfile, string][]).map(([profile, label]) => {
-                const isActive = s.strategyProfile === profile;
-                return (
-                  <button key={profile} type="button" onClick={() => changeProfile(profile)}
-                    className={cn("rounded-lg border py-2 px-1 text-center transition-colors",
-                      isActive ? "border-purple-500/60 bg-purple-500/15 text-purple-300" : "border-white/10 bg-black/30 text-muted-foreground hover:border-white/20")}>
-                    <p className="text-[10px] font-black leading-tight">{label}</p>
-                    <p className="text-[9px] font-bold mt-0.5">{STRATEGY_PROFILES[profile].minConfidenceOverride}%</p>
-                  </button>
-                );
-              })}
+        <div className="p-5 space-y-4 max-h-[75vh] overflow-y-auto">
+          <div className="rounded-xl border border-purple-500/20 bg-purple-500/5 p-3">
+            <p className="text-[9px] uppercase font-black text-purple-300">Entrada configurada</p>
+            <p className="text-[11px] text-white font-black mt-1">{digitsContractLabel(s.digitsContract, s.digitsTargetDigit)}</p>
+            <p className="text-[9px] text-muted-foreground mt-1">Contrato e dígito são seleccionados directamente no painel, fora deste modal.</p>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            {row("Stake inicial ($)", "stake", "0.01", 0.35)}
+            {row("Take Profit ($)", "targetProfit", "0.01", 0)}
+            {row("Stop Loss ($)", "stopLoss", "0.01", 0)}
+            {row("Máx. perdas seg.", "maxConsecutiveLosses", "1", 1)}
+          </div>
+          <div className="p-3 bg-white/5 rounded-xl border border-white/10 space-y-3">
+            <div className="flex items-center justify-between">
+              <div>
+                <span className="text-[11px] text-muted-foreground font-bold">Martingale</span>
+                <p className="text-[9px] text-muted-foreground mt-0.5">Aumenta a stake após LOSS.</p>
+              </div>
+              <Switch checked={s.useMartingale} disabled={isBotRunningGlobally()} onCheckedChange={v => updateSettings({ useMartingale: v })} className="scale-90" />
             </div>
+            {s.useMartingale && (
+              <>
+                <div className="grid grid-cols-2 gap-2">
+                  {row("Steps", "maxMartingaleSteps", "1", 0)}
+                  {row("Multiplicador", "martingaleMultiplier", "0.1", 1)}
+                </div>
+
+                <div className="pt-2 border-t border-white/5 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <span className="text-[11px] text-white font-bold">Martingale Avançado</span>
+                      <p className="text-[9px] text-muted-foreground mt-0.5">Após LOSS, pode mudar contrato e dígito.</p>
+                    </div>
+                    <Switch
+                      checked={s.useAdvancedMartingale}
+                      disabled={isBotRunningGlobally()}
+                      onCheckedChange={v => updateSettings({ useAdvancedMartingale: v })}
+                      className="scale-90"
+                    />
+                  </div>
+
+                  {s.useAdvancedMartingale && (
+                    <div className="space-y-3">
+                      <div className="grid grid-cols-2 gap-2">
+                        <TextStepper
+                          label="Contrato"
+                          value={DIGITS_CONTRACTS.find(contract => contract.value === s.advancedMartingaleContract)?.label ?? "Under"}
+                          disabled={isBotRunningGlobally()}
+                          onPrevious={() => {
+                            const index = DIGITS_CONTRACTS.findIndex(contract => contract.value === s.advancedMartingaleContract);
+                            const nextIndex = (index - 1 + DIGITS_CONTRACTS.length) % DIGITS_CONTRACTS.length;
+                            updateSettings({ advancedMartingaleContract: DIGITS_CONTRACTS[nextIndex].value });
+                          }}
+                          onNext={() => {
+                            const index = DIGITS_CONTRACTS.findIndex(contract => contract.value === s.advancedMartingaleContract);
+                            const nextIndex = (index + 1) % DIGITS_CONTRACTS.length;
+                            updateSettings({ advancedMartingaleContract: DIGITS_CONTRACTS[nextIndex].value });
+                          }}
+                        />
+
+                        <TextStepper
+                          label="Dígito"
+                          value={String(s.advancedMartingaleTargetDigit)}
+                          disabled={isBotRunningGlobally()}
+                          onPrevious={() => updateSettings({ advancedMartingaleTargetDigit: (s.advancedMartingaleTargetDigit + 9) % 10 })}
+                          onNext={() => updateSettings({ advancedMartingaleTargetDigit: (s.advancedMartingaleTargetDigit + 1) % 10 })}
+                        />
+                      </div>
+
+                      {row("Máx. aplicações avançadas seg.", "maxAdvancedMartingaleSteps", "1", 1)}
+                    </div>
+                  )}
+                </div>
+              </>
+            )}
           </div>
-          <div className="grid grid-cols-2 gap-3">
-            {row("Stake Base ($)", "stake", "0.01", 0.35)}
-            {row("Take Profit ($)", "targetProfit", "0.5", 0.01)}
-            {row("Stop Loss ($)", "stopLoss", "0.5", 0.01)}
-            {row("Conf. Mínima (%)", "minConfidence", "1", 0, 100)}
-          </div>
-          <div className="space-y-1">
-            {row("Duração do Contrato (ticks)", "contractDurationTicks", "1", 1, 20)}
-            <p className="text-[9px] text-muted-foreground/70">
-              Mesmo valor usado ao vivo e no backtest — os dois ficam sempre em sincronia.
+          {row("Cooldown após limite (s)", "cooldownAfterLoss", "1", 0)}
+          <div className="p-3 rounded-xl border border-purple-500/20 bg-purple-500/5">
+            <p className="text-[9px] uppercase font-black text-purple-300">Gestão separada da estratégia</p>
+            <p className="text-[10px] text-muted-foreground mt-1 leading-relaxed">
+              WIN repete a mesma entrada. LOSS aplica a progressão configurada. O risco não altera o contrato nem o dígito seleccionado.
             </p>
-          </div>
-          <div className="p-3 bg-white/5 rounded-xl border border-white/10 space-y-2">
-            {tog("Martingale", "useMartingale")}
-            {s.useMartingale && <div className="grid grid-cols-2 gap-2">{row("Steps", "maxMartingaleSteps", "1", 0)}{row("Multiplicador", "martingaleMultiplier", "0.1", 0.1)}</div>}
-          </div>
-          <div className="p-3 bg-white/5 rounded-xl border border-white/10 space-y-2">
-            {tog("Soros", "useSoros")}
-            {s.useSoros && row("Níveis Soros", "maxSorosLevels", "1", 0)}
-          </div>
-          <div className="grid grid-cols-2 gap-3">
-            {row("Max Perdas Seg.", "maxConsecutiveLosses", "1", 1)}
-            {row("Cooldown Loss (s)", "cooldownAfterLoss", "1", 0)}
           </div>
         </div>
         <div className="px-5 pb-5">
@@ -160,6 +352,10 @@ const AcertosModal = ({ onClose }: { onClose: () => void }) => {
     </div>
   );
 };
+
+function isBotRunningGlobally() {
+  return useBotStore.getState().isBotRunning;
+}
 
 // ── Modal resultado (SL/TP) ───────────────────────────────────────────────────
 const ResultModal = ({ type, amount, onClose }: { type: "profit" | "loss"; amount: number; onClose: () => void }) => (
@@ -186,19 +382,24 @@ const ResultModal = ({ type, amount, onClose }: { type: "profit" | "loss"; amoun
   </div>
 );
 
-// ── DashboardPage ─────────────────────────────────────────────────────────────
-export const DashboardPage = () => {
-  const navigate = useNavigate();
-  const { isAuthorized, activeAccount } = useConnectionStore();
+// ── DigitsDashboardBody ───────────────────────────────────────────────────
+// Dashboard de Digits, exatamente como sempre esteve — agora vive dentro de
+// uma aba de operação (ver SyntheticTabsBar / DashboardPage) em vez de ser
+// o único conteúdo possível para o mercado "synthetic". Nenhuma lógica de
+// Digits foi alterada por causa das abas.
+const DigitsDashboardBody = ({ tabId }: { tabId: string }) => {
+  const { isAuthorized } = useConnectionStore();
   const { isBotRunning, setIsBotRunning, lossCooldown, sessionStartedAt, sessionFrozenElapsed } = useBotStore();
-  const { market, setMarket, symbol, setSymbol, candles, ticks, timeframe, setTimeframe } = useMarketStore();
+  const { runningTabId, setRunningTab } = useSyntheticTabsStore();
+  const isOwner = runningTabId === tabId;
+  const { symbol, setSymbol, candles, ticks, timeframe, setTimeframe } = useMarketStore();
   const { settings } = useSettingsStore();
-  const { lastSignal } = useSignalStore();
+  const { runtime: digitsRuntime } = useDigitsStore();
   const { wins, losses, consecutiveLosses, pnl: rawPnl, modal, closeModal } = useSessionStore();
   const pnl = Number(rawPnl) || 0;
   const logEntries = useLogEntries(60);
-  const timer = useSessionTimer(isBotRunning, sessionStartedAt, sessionFrozenElapsed);
-  const [showAcertos, setShowAcertos] = useState(false);
+  const timer = useSessionTimer(isBotRunning && isOwner, sessionStartedAt, sessionFrozenElapsed);
+  const [showDigitsConfig, setShowDigitsConfig] = useState(false);
   const [nowTick, setNowTick] = useState(() => Date.now());
   useEffect(() => {
     if (!lossCooldown) return;
@@ -229,12 +430,6 @@ export const DashboardPage = () => {
     }
   }, [logEntries.length]);
 
-  // Redirecionar se sem Deriv
-  useEffect(() => {
-    if (!isAuthorized && !activeAccount) navigate("/");
-  }, [isAuthorized, activeAccount]);
-
-  const ind = lastSignal?.indicators;
   const currentPrice = ticks.length > 0 ? ticks[ticks.length - 1].price : null;
   const prevPrice = ticks.length > 1 ? ticks[ticks.length - 2].price : null;
   const isUp = currentPrice && prevPrice ? currentPrice >= prevPrice : true;
@@ -245,129 +440,167 @@ export const DashboardPage = () => {
     trade: "text-emerald-400", risk: "text-orange-400", error: "text-red-400"
   };
 
-  // Fase 1 do plano multi-mercado — ver forex_ux_architecture.md.
-  // Mercado ainda não escolhido nesta sessão: mostra o selector em vez do
-  // dashboard. Nenhum destes dois ramos toca no motor de trading nem no
-  // resto da página abaixo — o dashboard de sintéticos continua exactamente
-  // como sempre esteve quando market === "synthetic".
-  if (market === null) return <MarketSelectScreen />;
-  if (market === "forex") return <ForexDashboardPage />;
-
   return (
     <>
-      {/* Fase 1 multi-mercado: trocar só permitido com o bot parado — mesma
-          regra já usada para "Baixar histórico real" no BacktestPanel. */}
-      <div className="flex justify-end mb-2">
-        <button
-          onClick={() => !isBotRunning && setMarket(null)}
-          disabled={isBotRunning}
-          title={isBotRunning ? "Pára o bot para trocar de mercado" : "Trocar de mercado"}
-          className="text-[9px] font-black uppercase tracking-wide text-muted-foreground/60 hover:text-purple-400 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
-        >
-          ⇄ Trocar mercado
-        </button>
-      </div>
-
       {/* Fix 1: Layout 2 colunas desktop — usa grid com larguras fixas */}
       <div className="grid grid-cols-1 lg:grid-cols-[300px_1fr] gap-4">
 
         {/* ══ COLUNA ESQUERDA ══════════════════════════════════════════════ */}
         <div className="flex flex-col gap-3">
 
-          {/* Cronómetro + Lucro + Win/Loss */}
+          {/* Selectores principais Digits — fora do modal de gestão de banca */}
+          <DigitsSelectors />
+
+          {/* Sessão + P/L + Win/Loss */}
           <NeonCard variant="purple" className="p-4 space-y-3">
+            <div className="flex items-center justify-between gap-3">
+              <div className="flex items-center gap-2">
+                <Clock3 className="w-4 h-4 text-purple-400" />
+                <p className="text-[9px] text-muted-foreground uppercase font-black tracking-widest">Sessão Digits</p>
+              </div>
+              <Badge className={cn(isBotRunning && isOwner ? "bg-green-500/10 text-green-300 border-green-500/20" : "bg-white/5 text-muted-foreground border-white/10")}>{isBotRunning && isOwner ? "OPERANDO" : isBotRunning ? "NOUTRA ABA" : "PARADO"}</Badge>
+            </div>
             <div className="flex items-center justify-center">
               <div className="px-4 py-2 bg-black/50 border border-purple-500/30 rounded-xl">
                 <span className="font-mono font-black text-2xl text-white tracking-widest">{timer}</span>
               </div>
             </div>
             <div className="grid grid-cols-2 gap-2">
-              <div className="p-3 bg-white/5 rounded-xl border border-white/10 text-center">
-                <p className="text-[9px] text-muted-foreground uppercase font-black">Lucro</p>
-                <p className={cn("text-base font-black mt-0.5", pnl >= 0 ? "text-green-400" : "text-red-400")}>
-                  {pnl >= 0 ? "+" : ""}${pnl.toFixed(2)}
-                </p>
-              </div>
-              <div className="p-3 bg-white/5 rounded-xl border border-white/10 text-center">
-                <p className="text-[9px] text-muted-foreground uppercase font-black">Win / Loss</p>
-                <p className="text-base font-black mt-0.5">
-                  <span className="text-green-400">{wins}</span>
-                  <span className="text-muted-foreground mx-1">/</span>
-                  <span className="text-red-400">{losses}</span>
-                </p>
-              </div>
+              <StatusPill label="Lucro da sessão" value={`${pnl >= 0 ? "+" : ""}$${pnl.toFixed(2)}`} className={pnl >= 0 ? "border-green-500/10" : "border-red-500/10"} />
+              <StatusPill label="Win / Loss" value={`${wins} / ${losses}`} />
             </div>
           </NeonCard>
 
-          {/* Painel A — Métricas */}
-          <NeonCard variant="blue" className="p-4 flex-1">
-            <p className="text-[9px] text-muted-foreground uppercase font-black tracking-widest mb-3">Análise em Tempo Real</p>
-            <div className="space-y-2">
-              {/* Barra de confiança */}
-              <div className="space-y-1">
-                <div className="flex justify-between text-[10px]">
-                  <span className="text-muted-foreground font-bold">Confiança IA</span>
-                  <span className={cn("font-black", (lastSignal?.confidence || 0) >= settings.minConfidence ? "text-green-400" : "text-red-400")}>
-                    {lastSignal?.confidence || 0}%
-                  </span>
-                </div>
-                <div className="h-1.5 bg-white/10 rounded-full overflow-hidden">
-                  <motion.div animate={{ width: `${lastSignal?.confidence || 0}%` }}
-                    className={cn("h-full rounded-full", (lastSignal?.confidence || 0) >= settings.minConfidence ? "bg-gradient-to-r from-blue-500 to-green-400" : "bg-gradient-to-r from-red-500 to-yellow-500")} />
-                </div>
+          {/* 1 + 2 + 7 — configuração, modo e próxima entrada */}
+          <NeonCard variant="blue" className="p-4 space-y-3">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Target className="w-4 h-4 text-blue-400" />
+                <p className="text-[9px] text-muted-foreground uppercase font-black tracking-widest">Configuração da operação</p>
               </div>
-              {/* Métricas */}
-              {[
-                { label: "Assertividade", value: `${winRate}%`, color: winRate >= 55 ? "text-green-400" : "text-yellow-400" },
-                { label: "WR Operação", value: lastSignal?.type !== "NEUTRAL" && lastSignal?.type ? lastSignal.type : "—", color: lastSignal?.type === "CALL" ? "text-blue-400" : lastSignal?.type === "PUT" ? "text-pink-400" : "text-muted-foreground" },
-                { label: "Conseq. Loss", value: String(consecutiveLosses), color: consecutiveLosses >= 3 ? "text-red-400" : "text-white" },
-                { label: "Stake Actual", value: `$${settings.stake.toFixed(2)}`, color: "text-blue-400" },
-                { label: "Trend Freshness", value: `${ind?.trendFreshnessScore?.toFixed(1) || "—"}/10`, color: (ind?.trendFreshnessScore || 0) >= 6 ? "text-green-400" : "text-amber-400" },
-                { label: "Timing Quality", value: `${ind?.timingQuality?.toFixed(1) || "—"}/10`, color: (ind?.timingQuality || 0) >= 6 ? "text-green-400" : "text-amber-400" },
-              ].map(({ label, value, color }) => (
-                <div key={label} className="flex items-center justify-between py-1 border-b border-white/5 last:border-0">
-                  <span className="text-[10px] text-muted-foreground font-bold">{label}</span>
-                  <span className={cn("text-[10px] font-black", color)}>{value}</span>
-                </div>
-              ))}
-              {/* Análise Estrutural */}
-              <div className="pt-1 space-y-1.5">
-                <p className="text-[9px] text-muted-foreground uppercase font-black">Análise Estrutural</p>
-                <div className="flex gap-1.5 flex-wrap">
-                  <Badge className={cn("text-[8px] font-black", ind?.marketCondition === "TRENDING" ? "bg-green-500/10 text-green-400 border-green-500/20" : "bg-amber-500/10 text-amber-400 border-amber-500/20")}>
-                    {ind?.marketCondition || "—"}
-                  </Badge>
-                  {lastSignal?.type && lastSignal.type !== "NEUTRAL" && (
-                    <Badge className={cn("text-[8px] font-black", lastSignal.type === "CALL" ? "bg-blue-500/10 text-blue-400 border-blue-500/20" : "bg-pink-500/10 text-pink-400 border-pink-500/20")}>
-                      {lastSignal.type === "CALL" ? <><TrendingUp className="w-2.5 h-2.5 mr-0.5" />CALL</> : <><TrendingDown className="w-2.5 h-2.5 mr-0.5" />PUT</>}
-                    </Badge>
-                  )}
-                </div>
-                {ind?.reason && <p className="text-[9px] text-blue-400/80 leading-tight italic">"{ind.reason}"</p>}
-              </div>
+              <Badge className="bg-purple-500/10 text-purple-300 border-purple-500/20 text-[8px]">{digitModeLabel(settings.digitsTargetDigit)}</Badge>
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              <StatusPill label="Contrato" value={digitsContractLabel(settings.digitsContract, settings.digitsTargetDigit)} />
+              <StatusPill label="Duração" value="1 tick" />
+              <StatusPill label="Modo de entrada" value={digitModeLabel(settings.digitsTargetDigit)} />
+              <StatusPill label="Próxima stake" value={`$${(digitsRuntime.nextStake ?? digitsRuntime.currentStake ?? settings.stake).toFixed(2)}`} />
+            </div>
+            <div className="rounded-xl border border-blue-500/15 bg-blue-500/5 p-3">
+              <p className="text-[8px] uppercase text-blue-300 font-black">Próxima operação</p>
+              <p className="text-lg font-black text-white mt-1">
+                {digitsTargetText(digitsRuntime.nextContract, digitsRuntime.nextTargetDigit)}
+              </p>
+              <p className="text-[9px] text-muted-foreground mt-1">
+                {digitsRuntime.nextContract
+                  ? (digitsRuntime.nextTargetDigit == null && digitsContractNeedsDigit(digitsRuntime.nextContract) ? "Alvo será sorteado na entrada" : "Entrada preparada pelo motor")
+                  : "Aguardando início da sessão"}
+              </p>
             </div>
           </NeonCard>
 
-          {/* Botões: Acertos + Power */}
+          {/* 2 + 5 — estado atual do tick e operação */}
+          <NeonCard variant="purple" className="p-4 space-y-3">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Activity className="w-4 h-4 text-purple-400" />
+                <p className="text-[9px] text-muted-foreground uppercase font-black tracking-widest">Operação em tempo real</p>
+              </div>
+              <Badge className={digitsRuntime.isProcessing ? "bg-amber-500/10 text-amber-300 border-amber-500/20" : "bg-white/5 text-muted-foreground border-white/10"}>{digitsRuntime.isProcessing ? "PROCESSANDO" : "AGUARDANDO"}</Badge>
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              <StatusPill label="Entrada atual" value={digitsTargetText(digitsRuntime.currentContract, digitsRuntime.currentTargetDigit)} />
+              <StatusPill label="Stake na entrada" value={digitsRuntime.currentStakeInTrade != null ? `$${digitsRuntime.currentStakeInTrade.toFixed(2)}` : "—"} />
+              <StatusPill label="Último dígito do tick" value={getLastTickDigit(currentPrice) == null ? "—" : String(getLastTickDigit(currentPrice))} />
+              <StatusPill label="Contrato ativo" value={digitsRuntime.activeContractId ?? "—"} />
+            </div>
+            {digitsRuntime.error && <p className="text-[9px] text-red-400 font-bold leading-relaxed">{digitsRuntime.error}</p>}
+          </NeonCard>
+
+          {/* 3 — gestão de banca */}
+          <NeonCard variant="blue" className="p-4 space-y-3">
+            <div className="flex items-center gap-2">
+              <WalletCards className="w-4 h-4 text-blue-400" />
+              <p className="text-[9px] text-muted-foreground uppercase font-black tracking-widest">Gestão de banca</p>
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              <RuntimeMetric label="Stake atual" value={`$${(digitsRuntime.currentStake || settings.stake).toFixed(2)}`} accent="text-blue-400" />
+              <RuntimeMetric label="Martingale" value={settings.useMartingale ? `${digitsRuntime.martingaleStep} / ${settings.maxMartingaleSteps}` : "OFF"} accent="text-purple-300" />
+              <RuntimeMetric label="Avançado" value={settings.useAdvancedMartingale && settings.useMartingale ? `${digitsRuntime.advancedMartingaleStep} / ${settings.maxAdvancedMartingaleSteps}` : "OFF"} accent="text-purple-300" />
+              <RuntimeMetric label="Loss seguidos" value={`${digitsRuntime.consecutiveLosses} / ${settings.maxConsecutiveLosses}`} accent={digitsRuntime.consecutiveLosses >= 3 ? "text-red-400" : "text-white"} />
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              <StatusPill label="Take Profit" value={`$${settings.targetProfit.toFixed(2)}`} />
+              <StatusPill label="Stop Loss" value={`$${settings.stopLoss.toFixed(2)}`} />
+            </div>
+            {settings.useAdvancedMartingale && settings.useMartingale && (
+              <div className="rounded-xl border border-purple-500/15 bg-purple-500/5 p-3">
+                <div className="flex items-center justify-between gap-2">
+                  <p className="text-[8px] uppercase text-purple-300 font-black">Martingale Avançado</p>
+                  <span className="text-[9px] font-black text-white">{digitsTargetText(settings.advancedMartingaleContract, settings.advancedMartingaleTargetDigit)}</span>
+                </div>
+                <p className="text-[9px] text-muted-foreground mt-1">Aplicações: {digitsRuntime.advancedMartingaleStep} / {settings.maxAdvancedMartingaleSteps}</p>
+              </div>
+            )}
+          </NeonCard>
+
+          {/* 4 — última operação */}
+          <NeonCard variant="blue" className="p-4 space-y-3">
+            <div className="flex items-center gap-2">
+              <Repeat2 className="w-4 h-4 text-blue-400" />
+              <p className="text-[9px] text-muted-foreground uppercase font-black tracking-widest">Última operação</p>
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              <StatusPill label="Contrato" value={digitsTargetText(digitsRuntime.lastContract, digitsRuntime.lastTargetDigit)} />
+              <StatusPill label="Stake" value={digitsRuntime.lastStake != null ? `$${digitsRuntime.lastStake.toFixed(2)}` : "—"} />
+              <StatusPill label="Último dígito" value={digitsRuntime.lastExitDigit == null ? "—" : String(digitsRuntime.lastExitDigit)} />
+              <StatusPill label="Resultado" value={digitsRuntime.lastResult === "WON" ? "WIN" : digitsRuntime.lastResult === "LOST" ? "LOSS" : "—"} className={digitsRuntime.lastResult === "WON" ? "border-green-500/20" : digitsRuntime.lastResult === "LOST" ? "border-red-500/20" : ""} />
+            </div>
+            {digitsRuntime.lastProfit != null && <p className={cn("text-right text-sm font-black", digitsRuntime.lastProfit >= 0 ? "text-green-400" : "text-red-400")}>{digitsRuntime.lastProfit >= 0 ? "+" : ""}${digitsRuntime.lastProfit.toFixed(2)}</p>}
+          </NeonCard>
+
+          {/* 6 — estatísticas da sessão */}
+          <NeonCard variant="purple" className="p-4 space-y-3">
+            <div className="flex items-center gap-2">
+              <BarChart3 className="w-4 h-4 text-purple-400" />
+              <p className="text-[9px] text-muted-foreground uppercase font-black tracking-widest">Estatísticas Digits</p>
+            </div>
+            <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-2 gap-2">
+              <RuntimeMetric label="Operações" value={String(wins + losses)} />
+              <RuntimeMetric label="Wins" value={String(wins)} accent="text-green-400" />
+              <RuntimeMetric label="Losses" value={String(losses)} accent="text-red-400" />
+              <RuntimeMetric label="Win Rate" value={`${winRate}%`} accent={winRate >= 50 ? "text-green-400" : "text-yellow-400"} />
+            </div>
+            <div className="rounded-xl border border-white/5 bg-black/20 p-3 flex items-center justify-between">
+              <span className="text-[8px] uppercase text-muted-foreground font-black">P/L da sessão</span>
+              <span className={cn("text-sm font-black", pnl >= 0 ? "text-green-400" : "text-red-400")}>{pnl >= 0 ? "+" : ""}${pnl.toFixed(2)}</span>
+            </div>
+          </NeonCard>
+
+          {/* Configuração e controlo */}
           <div className="grid grid-cols-2 gap-3">
-            <Button variant="outline" onClick={() => setShowAcertos(true)}
+            <Button variant="outline" onClick={() => setShowDigitsConfig(true)}
               className="h-14 border-purple-500/40 text-purple-400 hover:bg-purple-500/10 gap-2 font-black uppercase text-[11px]">
-              <Settings2 className="w-4 h-4" /> Acertos
+              <Settings2 className="w-4 h-4" /> Gestão
             </Button>
-            <button onClick={() => setIsBotRunning(!isBotRunning)} disabled={!isAuthorized}
+            <button
+              onClick={() => {
+                if (isBotRunning && isOwner) { setIsBotRunning(false); setRunningTab(null); }
+                else if (!isBotRunning) { setRunningTab(tabId); setIsBotRunning(true); }
+              }}
+              disabled={!isAuthorized || (isBotRunning && !isOwner)}
+              title={isBotRunning && !isOwner ? "O bot já está a operar noutra aba" : undefined}
               className={cn("h-14 rounded-xl border-2 font-black uppercase text-[11px] flex items-center justify-center gap-2 transition-all duration-300 disabled:opacity-40",
-                isBotRunning ? "border-red-500/60 bg-red-500/10 text-red-400 shadow-lg shadow-red-500/20" : "border-green-500/40 bg-green-500/5 text-green-400 hover:bg-green-500/15")}>
-              <Power className={cn("w-5 h-5", isBotRunning && "animate-pulse")} />
-              {isBotRunning ? "Stop" : "Start"}
+                isBotRunning && isOwner ? "border-red-500/60 bg-red-500/10 text-red-400 shadow-lg shadow-red-500/20" : "border-green-500/40 bg-green-500/5 text-green-400 hover:bg-green-500/15")}>
+              <Power className={cn("w-5 h-5", isBotRunning && isOwner && "animate-pulse")} />
+              {isBotRunning && isOwner ? "Stop" : "Start"}
             </button>
           </div>
 
           {showCooldownBanner && (
             <div className="flex items-center gap-2 px-3 py-2 rounded-lg border border-amber-500/30 bg-amber-500/10 text-amber-400">
               <AlertTriangle className="w-4 h-4 shrink-0" />
-              <p className="text-[10px] font-bold leading-tight">
-                Cooldown de risco activo — retoma em {cooldownRemainingSec}s
-              </p>
+              <p className="text-[10px] font-bold leading-tight">Cooldown de risco activo — retoma em {cooldownRemainingSec}s</p>
             </div>
           )}
         </div>
@@ -413,7 +646,7 @@ export const DashboardPage = () => {
             {/* Histórico — Fix 3 + Fix 4 */}
             <NeonCard variant="blue" className="p-4 flex flex-col" style={{ height: "280px" }}>
               <p className="text-[9px] text-muted-foreground uppercase font-black tracking-widest mb-2 shrink-0">
-                Histórico em Tempo Real
+                Atividade em Tempo Real
               </p>
               <div className="flex-1 overflow-y-auto space-y-1.5 pr-0.5"
                 style={{ scrollbarWidth: "thin", scrollbarColor: "rgba(59,130,246,0.3) transparent", overscrollBehavior: "contain" }}>
@@ -425,25 +658,30 @@ export const DashboardPage = () => {
                   ) : localHistory.slice(0, 30).map(trade => (
                     <motion.div key={trade.id}
                       initial={{ opacity: 0, x: -6 }} animate={{ opacity: 1, x: 0 }}
-                      className="flex items-center justify-between p-2 rounded-lg bg-white/5 border border-white/8">
-                      <div className="flex items-center gap-2">
-                        <div className={cn("w-5 h-5 rounded-md flex items-center justify-center text-[8px] font-black",
+                      className="flex items-center justify-between gap-2 p-2 rounded-lg bg-white/5 border border-white/8">
+                      <div className="flex items-center gap-2 min-w-0">
+                        <div className={cn("w-6 h-6 rounded-md flex items-center justify-center text-[8px] font-black shrink-0",
                           trade.status === "WON" ? "bg-green-500/15 text-green-400"
                           : trade.status === "LOST" ? "bg-red-500/15 text-red-400"
                           : "bg-amber-500/15 text-amber-400")}>
                           {trade.status === "WON" ? "W" : trade.status === "LOST" ? "L" : "…"}
                         </div>
-                        <div>
-                          <p className="text-[9px] font-black text-white truncate max-w-[55px]">{trade.symbol}</p>
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-1.5">
+                            <p className="text-[9px] font-black text-white truncate">{trade.type.replace("DIGIT", "")}{trade.targetDigit != null ? ` ${trade.targetDigit}` : ""}</p>
+                            <span className="text-[8px] text-muted-foreground truncate">{trade.symbol}</span>
+                          </div>
                           <p className="text-[8px] text-muted-foreground">{new Date(trade.time).toLocaleTimeString()}</p>
                         </div>
                       </div>
-                      <span className={cn("text-[10px] font-black",
-                        trade.status === "PENDING" ? "text-amber-400"
-                        : trade.profit && trade.profit > 0 ? "text-green-400" : "text-red-400")}>
-                        {trade.status === "PENDING" ? "Pendente"
-                          : `${trade.profit && trade.profit > 0 ? "+" : ""}$${Number(trade.profit || 0).toFixed(2)}`}
-                      </span>
+                      <div className="text-right shrink-0">
+                        <p className="text-[8px] text-muted-foreground">Stake ${Number(trade.stake || 0).toFixed(2)}</p>
+                        <span className={cn("text-[10px] font-black",
+                          trade.status === "PENDING" ? "text-amber-400"
+                          : Number(trade.profit || 0) > 0 ? "text-green-400" : "text-red-400")}>
+                          {trade.status === "PENDING" ? "Pendente" : `${Number(trade.profit || 0) >= 0 ? "+" : ""}$${Number(trade.profit || 0).toFixed(2)}`}
+                        </span>
+                      </div>
                     </motion.div>
                   ))}
                 </AnimatePresence>
@@ -489,8 +727,60 @@ export const DashboardPage = () => {
 
       {/* Modal Acertos */}
       <AnimatePresence>
-        {showAcertos && <AcertosModal onClose={() => setShowAcertos(false)} />}
+        {showDigitsConfig && <DigitsConfigModal onClose={() => setShowDigitsConfig(false)} />}
       </AnimatePresence>
+    </>
+  );
+};
+
+// ── DashboardPage ─────────────────────────────────────────────────────────
+// Ponto de entrada de /dashboard. Decide entre o selector de mercado, o
+// Forex (inalterado) e, para Índices Sintéticos, a orquestração de abas de
+// operação (Digits / Accumulators) — nunca as duas no mesmo dashboard.
+export const DashboardPage = () => {
+  const navigate = useNavigate();
+  const { isAuthorized, activeAccount } = useConnectionStore();
+  const { isBotRunning } = useBotStore();
+  const { market, setMarket } = useMarketStore();
+  const { tabs, activeTabId } = useSyntheticTabsStore();
+
+  // Redirecionar se sem Deriv — igual ao comportamento anterior.
+  useEffect(() => {
+    if (!isAuthorized && !activeAccount) navigate("/");
+  }, [isAuthorized, activeAccount]);
+
+  // Fase 1 do plano multi-mercado — ver forex_ux_architecture.md.
+  // Mercado ainda não escolhido nesta sessão: mostra o selector em vez do
+  // dashboard. O Forex continua exatamente como sempre esteve.
+  if (market === null) return <MarketSelectScreen />;
+  if (market === "forex") return <ForexDashboardPage />;
+
+  const activeTab = tabs.find((t) => t.id === activeTabId) ?? null;
+
+  return (
+    <>
+      {/* Fase 1 multi-mercado: trocar só permitido com o bot parado — mesma
+          regra já usada para alterar dados do mercado com o bot parado. */}
+      <div className="flex justify-end mb-2">
+        <button
+          onClick={() => !isBotRunning && setMarket(null)}
+          disabled={isBotRunning}
+          title={isBotRunning ? "Pára o bot para trocar de mercado" : "Trocar de mercado"}
+          className="text-[9px] font-black uppercase tracking-wide text-muted-foreground/60 hover:text-purple-400 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+        >
+          ⇄ Trocar mercado
+        </button>
+      </div>
+
+      {tabs.length === 0 ? (
+        <CreateSyntheticTabScreen />
+      ) : (
+        <>
+          <SyntheticTabsBar />
+          {activeTab?.type === "digits" && <DigitsDashboardBody tabId={activeTab.id} />}
+          {activeTab?.type === "accumulators" && <AccumulatorsDashboardBody tabId={activeTab.id} />}
+        </>
+      )}
     </>
   );
 };

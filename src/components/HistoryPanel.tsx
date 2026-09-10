@@ -3,12 +3,11 @@ import {
   History, 
   Trash2, 
   Download, 
-  TrendingUp, 
-  TrendingDown, 
   CheckCircle2, 
   XCircle,
   Filter,
-  ArrowRight
+  ArrowRight,
+  CircleDot
 } from "lucide-react";
 import { clearTradeHistory, exportToPDF } from "../lib/storage";
 import { TradeHistory } from "../types";
@@ -22,7 +21,13 @@ import { motion, AnimatePresence } from "motion/react";
 export const HistoryPanel = () => {
   const { history, loadHistory } = useHistoryStore();
   const [filterResult, setFilterResult] = useState<"ALL" | "WON" | "LOST">("ALL");
-  const [filterType, setFilterType] = useState<"ALL" | "CALL" | "PUT">("ALL");
+  const [filterMarket, setFilterMarket] = useState<"ALL" | "synthetic" | "forex">("ALL");
+  const [filterType, setFilterType] = useState<"ALL" | "DIGITUNDER" | "DIGITOVER" | "DIGITMATCH" | "DIGITDIFF" | "DIGITEVEN" | "DIGITODD" | "CALL" | "PUT">("ALL");
+
+  useEffect(() => {
+    if (filterMarket === "synthetic" && (filterType === "CALL" || filterType === "PUT")) setFilterType("ALL");
+    if (filterMarket === "forex" && filterType.startsWith("DIGIT")) setFilterType("ALL");
+  }, [filterMarket, filterType]);
 
   useEffect(() => {
     // loadHistory é async — usa .catch() para apanhar rejeições
@@ -35,8 +40,9 @@ export const HistoryPanel = () => {
 
   const filteredHistory = history.filter(trade => {
     const resultMatch = filterResult === "ALL" || trade.status === filterResult;
+    const marketMatch = filterMarket === "ALL" || trade.market === filterMarket;
     const typeMatch = filterType === "ALL" || trade.type === filterType;
-    return resultMatch && typeMatch;
+    return resultMatch && marketMatch && typeMatch;
   });
 
   const stats = {
@@ -129,18 +135,25 @@ export const HistoryPanel = () => {
           </div>
 
           <div className="flex gap-1 bg-black/20 p-1 rounded-lg border border-white/5">
-            {["ALL", "CALL", "PUT"].map(t => (
-              <button
-                key={t}
-                onClick={() => setFilterType(t as any)}
-                className={cn(
-                  "px-3 py-1 rounded-md text-[10px] font-bold uppercase transition-all",
-                  filterType === t ? (t === "CALL" ? "bg-green-600 text-white" : "bg-red-600 text-white") : (t === "ALL" ? "bg-purple-600 text-white" : "text-muted-foreground hover:text-white"),
-                  filterType !== t && "text-muted-foreground hover:text-white",
-                  filterType === "ALL" && t === "ALL" && "bg-blue-600"
-                )}
-              >
-                {t === "ALL" ? "Direções" : t}
+            {[["ALL", "Todos"], ["synthetic", "Digits"], ["forex", "Forex"]].map(([value, label]) => (
+              <button key={value} onClick={() => setFilterMarket(value as any)}
+                className={cn("px-3 py-1 rounded-md text-[10px] font-bold uppercase transition-all",
+                  filterMarket === value ? "bg-purple-600 text-white" : "text-muted-foreground hover:text-white")}>
+                {label}
+              </button>
+            ))}
+          </div>
+
+          <div className="flex gap-1 bg-black/20 p-1 rounded-lg border border-white/5 overflow-x-auto">
+            {[
+              "ALL",
+              ...(filterMarket === "forex" || filterMarket === "ALL" ? ["CALL", "PUT"] : []),
+              ...(filterMarket === "synthetic" || filterMarket === "ALL" ? ["DIGITUNDER", "DIGITOVER", "DIGITMATCH", "DIGITDIFF", "DIGITEVEN", "DIGITODD"] : []),
+            ].map(t => (
+              <button key={t} onClick={() => setFilterType(t as any)}
+                className={cn("px-3 py-1 rounded-md text-[10px] font-bold uppercase transition-all whitespace-nowrap",
+                  filterType === t ? "bg-blue-600 text-white" : "text-muted-foreground hover:text-white")}>
+                {t === "ALL" ? "Contratos" : t.replace("DIGIT", "")}
               </button>
             ))}
           </div>
@@ -161,14 +174,15 @@ export const HistoryPanel = () => {
               <div className="flex items-center gap-4">
                 <div className={cn(
                   "w-10 h-10 rounded-lg flex items-center justify-center shrink-0",
-                  trade.type === "CALL" ? "bg-green-500/10 text-green-400" : "bg-red-500/10 text-red-400"
+                  trade.market === "forex" ? "bg-emerald-500/10 text-emerald-400" : "bg-purple-500/10 text-purple-400"
                 )}>
-                  {trade.type === "CALL" ? <TrendingUp className="w-5 h-5" /> : <TrendingDown className="w-5 h-5" />}
+                  <CircleDot className="w-5 h-5" />
                 </div>
                 <div>
                   <div className="flex items-center gap-2">
                     <span className="font-bold text-white tracking-tight">{trade.symbol}</span>
-                    <Badge variant="outline" className="text-[8px] uppercase">{trade.type}</Badge>
+                    <Badge variant="outline" className="text-[8px] uppercase">{trade.type === "CALL" || trade.type === "PUT" ? trade.type : trade.type.replace("DIGIT", "")}</Badge>
+                    {trade.targetDigit !== undefined && <Badge variant="outline" className="text-[8px] uppercase border-purple-500/20 text-purple-300">Dígito {trade.targetDigit}</Badge>}
                   </div>
                   <p className="text-[10px] text-muted-foreground">{new Date(trade.time).toLocaleString()}</p>
                 </div>
@@ -182,7 +196,7 @@ export const HistoryPanel = () => {
                 
                 <div className="text-center md:text-left">
                   <p className="text-[8px] text-muted-foreground uppercase font-bold">Confiança</p>
-                  <p className="text-sm font-bold text-blue-400">{trade.confidence || 0}%</p>
+                  <p className="text-sm font-bold text-blue-400">{trade.confidence != null ? `${trade.confidence}%` : "—"}</p>
                 </div>
 
                 <div className="text-center md:text-left">

@@ -24,7 +24,7 @@ export const Layout = ({ children }: LayoutProps) => {
     "/testes-forex": "Testes Forex",
     "/historico": "Histórico",
     "/logs": "Logs",
-    "/estrategias": "Estratégias",
+    "/estrategias": "Digits",
     "/configuracoes": "Configurações",
   };
 
@@ -37,7 +37,7 @@ export const Layout = ({ children }: LayoutProps) => {
       "Testes Forex": "/testes-forex",
       "Histórico": "/historico",
       "Logs": "/logs",
-      "Estratégias": "/estrategias",
+      "Digits": "/estrategias",
       "Configurações": "/configuracoes",
     };
     const path = tabToPath[tab];

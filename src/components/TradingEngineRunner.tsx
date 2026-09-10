@@ -1,103 +1,91 @@
-import { useEffect, useRef } from "react";
-import { useRiskManager } from "../hooks/useRiskManager";
-import { useTradingEngine } from "../hooks/useTradingEngine";
+import { useEffect } from "react";
 import { useConnectionStore, useBotStore, useMarketStore, useSettingsStore } from "../store";
-import { useSessionStore } from "../store/useSessionStore";
-import { logger } from "../lib/logger";
+import { useDigitsEngine } from "../digits/useDigitsEngine";
+import { useAccumulatorsEngine } from "../accumulators/useAccumulatorsEngine";
+import { useAccumulatorsSettingsStore } from "../store/useAccumulatorsSettingsStore";
+import { useSyntheticTabsStore } from "../store/useSyntheticTabsStore";
+import { forexRuntimeIntegrationV1 } from "../forex/runtime";
 
 /**
- * TradingEngineRunner — componente sem UI (retorna null).
+ * TradingEngineRunner — componente sem UI.
  *
- * Substitui a abordagem anterior de renderizar <BotControls/> inteiro
- * fora do ecrã (left: -9999px) só para manter os hooks do motor activos.
- * Essa abordagem montava uma árvore de UI completa (inputs, selects,
- * modal próprio, mini-backtest) que nunca era vista nem usada — código
- * morto a correr em paralelo. Este componente faz exactamente o mesmo
- * trabalho de manter useTradingEngine + useRiskManager montados, sem
- * nenhuma UI fantasma associada.
- *
- * Montado uma única vez em App.tsx, sempre que isAuthorized === true,
- * para que o bot continue a operar independentemente da página em que
- * o utilizador está.
+ * Índices Sintéticos agora suporta duas abas de operação independentes —
+ * Digits e Accumulators (ver useSyntheticTabsStore) — mas apenas uma pode
+ * estar "isBotRunning" de cada vez: runningTabId identifica qual delas é a
+ * dona da execução actual, e cada motor só é activado quando a aba
+ * correspondente é a dona. O runtime Forex continua totalmente separado e
+ * intocado.
  */
 export const TradingEngineRunner = () => {
-  const { isAuthorized, isDemo, balance } = useConnectionStore();
-  const { isBotRunning, setIsBotRunning } = useBotStore();
-  const { symbol, candles, market } = useMarketStore();
+  const { isAuthorized, balance } = useConnectionStore();
+  const { isBotRunning, setLossCooldown } = useBotStore();
+  const { symbol, market } = useMarketStore();
   const { settings } = useSettingsStore();
-  const {
-    stake, targetProfit, stopLoss, minConfidence, cooldownSeconds, contractDurationTicks,
-    strategyProfile, useMartingale, martingaleMultiplier, maxMartingaleSteps,
-    useSoros, maxSorosLevels, maxConsecutiveLosses, cooldownAfterLoss,
-  } = settings;
+  const { settings: accuSettings } = useAccumulatorsSettingsStore();
+  const { tabs, runningTabId, setRunningTab } = useSyntheticTabsStore();
+  const runningTabType = tabs.find((t) => t.id === runningTabId)?.type ?? null;
 
-  const isBotRunningRef = useRef(false);
-  const initialBalanceRef = useRef<number | null>(null);
-  useEffect(() => { isBotRunningRef.current = isBotRunning; }, [isBotRunning]);
-
-  // Risk Manager — Martingale, Soros, Stop Loss / Take Profit
-  const [riskState, riskActions] = useRiskManager(
-    { stake, targetProfit, stopLoss, useMartingale, martingaleMultiplier, maxMartingaleSteps, useSoros, maxSorosLevels },
-    isBotRunning, balance, setIsBotRunning
-  );
-
+  // Rede de segurança: sempre que o bot global pára (por qualquer motivo —
+  // Stop manual, Take Profit/Stop Loss, perdas seguidas), liberta a aba
+  // "dona" para que o Start volte a ficar disponível nas outras abas.
   useEffect(() => {
-    if (isBotRunning && balance !== null) {
-      riskActions.onBotStart(balance);
-      useSessionStore.getState().resetSession();
-      initialBalanceRef.current = balance; // captura saldo inicial para reconciliação
-    }
-    if (!isBotRunning) riskActions.onBotStop();
+    if (!isBotRunning && runningTabId) setRunningTab(null);
   }, [isBotRunning]);
 
-  // Fix #14: reconciliação periódica entre pnl acumulado e diff de saldo real
-  // Detecta divergência silenciosa causada por valores da API como strings
+  // O Forex continua a gerir o seu próprio risco através do Forex Runtime;
+  // o motor direccional legado deixou de ser montado.
+
+  // ── Forex: fluxo existente, isolado ──────────────────────────────────────
   useEffect(() => {
-    if (!isBotRunning || balance === null || initialBalanceRef.current === null) return;
-    const realPnl = balance - initialBalanceRef.current;
-    const sessionPnl = useSessionStore.getState().pnl;
-    const divergence = Math.abs(realPnl - sessionPnl);
-    if (divergence > 0.05) { // tolerância de 5 cêntimos para arredondamentos
-      logger.risk(
-        `Reconciliação P&L: saldo real ${realPnl >= 0 ? "+" : ""}$${realPnl.toFixed(2)} ` +
-        `vs sessão $${sessionPnl.toFixed(2)} (Δ${divergence.toFixed(2)})`
-      );
+    if (market === "forex" && isBotRunning && isAuthorized) {
+      forexRuntimeIntegrationV1.start();
+    } else if (market === "forex") {
+      forexRuntimeIntegrationV1.stop();
     }
-  }, [balance, isBotRunning]);
+    return () => {
+      if (market === "forex") forexRuntimeIntegrationV1.stop();
+    };
+  }, [market, isBotRunning, isAuthorized]);
 
-  // Trading Engine — análise de mercado + execução de trades
-  useTradingEngine(
-    {
-      symbol, candles,
-      currentStake: riskState.currentStake,
-      stake, minConfidence, cooldownSeconds, contractDurationTicks,
-      strategyProfile, maxConsecutiveLosses, cooldownAfterLoss,
-      // Guarda do Fase 1 do plano multi-mercado: strategy.ts/SYMBOLS são
-      // específicos de Índices Sintéticos. Mesmo que isBotRunning fique
-      // true por algum motivo fora deste ecrã, o motor nunca dispara um
-      // trade fora de market==="synthetic" — não há motor de Forex real
-      // ainda (ver forex_ux_architecture.md, Fase 2+).
-      isBotRunning: isBotRunning && market === "synthetic",
-      isAuthorized,
-      onWin: riskActions.onWin,
-      onLoss: riskActions.onLoss,
-      onForceStop: (reason: string) => {
-        // Antes dizia "Bot pausado automaticamente" — mas o bot NÃO pára,
-        // entra num cooldown temporário e retoma sozinho (é esse o design:
-        // maxConsecutiveLosses + cooldownAfterLoss são dois campos
-        // separados de propósito). A mensagem antiga dava a entender que
-        // tinha parado de vez, o que não é verdade.
-        logger.risk(`Cooldown de risco activado: ${reason}`);
-        useBotStore.getState().setLossCooldown({
-          reason,
-          until: Date.now() + cooldownAfterLoss * 1000,
-        });
-      },
-    },
-    isBotRunningRef
-  );
+  // ── Synthetic → Digits V1 ────────────────────────────────────────────────
+  useDigitsEngine({
+    contract: settings.digitsContract,
+    targetDigit: settings.digitsTargetDigit,
+    symbol,
+    isAuthorized,
+    isBotRunning: isBotRunning && market === "synthetic" && runningTabType === "digits",
+    balance,
+    stake: settings.stake,
+    targetProfit: settings.targetProfit,
+    stopLoss: settings.stopLoss,
+    useMartingale: settings.useMartingale,
+    martingaleMultiplier: settings.martingaleMultiplier,
+    maxMartingaleSteps: settings.maxMartingaleSteps,
+    useAdvancedMartingale: settings.useAdvancedMartingale,
+    advancedMartingaleContract: settings.advancedMartingaleContract,
+    advancedMartingaleTargetDigit: settings.advancedMartingaleTargetDigit,
+    maxAdvancedMartingaleSteps: settings.maxAdvancedMartingaleSteps,
+    maxConsecutiveLosses: settings.maxConsecutiveLosses,
+    cooldownAfterLoss: settings.cooldownAfterLoss,
+  });
 
-  // Sem UI — o modal de resultado (SL/TP) é lido directamente de useSessionStore
-  // pelo DashboardPage (ou por qualquer página que o queira mostrar no futuro).
+  // ── Synthetic → Accumulators V1 ──────────────────────────────────────────
+  useAccumulatorsEngine({
+    growthRate: accuSettings.growthRate,
+    tickCount: accuSettings.tickCount,
+    symbol,
+    isAuthorized,
+    isBotRunning: isBotRunning && market === "synthetic" && runningTabType === "accumulators",
+    balance,
+    stake: accuSettings.stake,
+    targetProfit: accuSettings.targetProfit,
+    stopLoss: accuSettings.stopLoss,
+    useMartingale: accuSettings.useMartingale,
+    martingaleMultiplier: accuSettings.martingaleMultiplier,
+    maxMartingaleSteps: accuSettings.maxMartingaleSteps,
+    maxConsecutiveLosses: accuSettings.maxConsecutiveLosses,
+    cooldownAfterLoss: accuSettings.cooldownAfterLoss,
+  });
+
   return null;
 };

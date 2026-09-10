@@ -19,7 +19,7 @@ const menuItems = [
   { icon: FlaskConical,     label: "Testes Forex", path: "/testes-forex" },
   { icon: History,         label: "Histórico",    path: "/historico" },
   { icon: Terminal,        label: "Logs",         path: "/logs" },
-  { icon: TrendingUp,      label: "Estratégias",  path: "/estrategias" },
+  { icon: TrendingUp,      label: "Digits",        path: "/estrategias" },
   { icon: Settings,        label: "Configurações",path: "/configuracoes" },
 ];
 

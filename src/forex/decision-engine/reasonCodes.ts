@@ -15,6 +15,7 @@ export const FOREX_REASON_MESSAGES: Record<ForexReasonCode, string> = {
   NEWS_BLOCK_HIGH_IMPACT: "Entrada bloqueada por evento económico de alto impacto.",
   NEWS_BLOCK_MEDIUM_IMPACT: "Entrada bloqueada por evento económico de impacto médio.",
   NEWS_COOLDOWN: "Período de resfriamento após evento económico.",
+  NEWS_WATCH_REQUIRES_CONFIRMATION: "Evento económico próximo exige confirmação adicional antes da entrada.",
   NO_VALID_CONTRACT: "Nenhum contrato válido para a decisão.",
   PROPOSAL_REJECTED: "A Proposal da Deriv foi rejeitada ou deixou de ser válida.",
   RISK_LIMIT: "Motor de risco não autorizou a entrada.",

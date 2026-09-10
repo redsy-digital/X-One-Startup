@@ -10,7 +10,7 @@ import { TradingEngineRunner } from "./components/TradingEngineRunner";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { derivService } from "./lib/deriv";
 import { logger } from "./lib/logger";
-import { useConnectionStore, useBotStore, useMarketStore, useHistoryStore } from "./store";
+import { useConnectionStore, useBotStore, useMarketStore, useHistoryStore, useSettingsStore } from "./store";
 import { forexMarketDataService } from "./forex/market-data";
 
 // ── Lazy page imports ─────────────────────────────────────────────────────────
@@ -39,7 +39,9 @@ const DerivGuard = ({ children }: { children: React.ReactNode }) => {
     return <PageLoader />;
   }
 
-  if (!isAuthorized && !activeAccount) {
+  // Uma conta guardada não garante que o PAT ainda é válido.
+  // Só mostramos o selector de mercado depois da autorização real.
+  if (!isAuthorized) {
     return <ConnectDerivScreen />;
   }
 
@@ -48,7 +50,7 @@ const DerivGuard = ({ children }: { children: React.ReactNode }) => {
 
 // ── Ecrã de conexão Deriv ─────────────────────────────────────────────────────
 const ConnectDerivScreen = () => {
-  const { connectWithPAT, derivError, derivLoading } = useConnectionStore();
+  const { connectWithPAT, derivError, derivLoading, derivTokenExpired } = useConnectionStore();
   const [pat, setPat] = React.useState("");
   const [loading, setLoading] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
@@ -67,11 +69,13 @@ const ConnectDerivScreen = () => {
         <NeonCard variant="blue" className="p-8 space-y-5">
           <div className="space-y-1">
             <h2 className="text-xl font-bold flex items-center gap-2">
-              <Link2 className="w-5 h-5 text-blue-400" /> Conectar à Deriv
+              <Link2 className="w-5 h-5 text-blue-400" />
+              {derivTokenExpired ? "Sessão Deriv expirada" : "Conectar à Deriv"}
             </h2>
             <p className="text-[11px] text-muted-foreground leading-relaxed">
-              Cola o teu <span className="text-blue-300 font-bold">API Token</span> da Deriv.
-              Gera-o em <span className="text-white font-bold">developers.deriv.com</span> → Dashboard → API Tokens → Read + Trade.
+              {derivTokenExpired
+                ? "O token usado anteriormente foi recusado pela Deriv. Insere um novo API Token para continuar."
+                : <>Cola o teu <span className="text-blue-300 font-bold">API Token</span> da Deriv. Gera-o em <span className="text-white font-bold">developers.deriv.com</span> → Dashboard → API Tokens → Read + Trade.</>}
             </p>
           </div>
 
@@ -201,9 +205,15 @@ export default function App() {
   } = useConnectionStore();
   const { addTick, setHistoricalCandles } = useMarketStore();
   const { loadHistory } = useHistoryStore();
+  const { loadSettings } = useSettingsStore();
 
   // Inicializar auth
   useEffect(() => { initAuth(); }, []);
+
+  // Carregar as configurações persistidas, incluindo Digits V1.
+  useEffect(() => {
+    if (supabaseUser) loadSettings().catch(console.error);
+  }, [supabaseUser, loadSettings]);
 
   // Listeners WebSocket permanentes
   useEffect(() => {
@@ -239,13 +249,27 @@ export default function App() {
 
     const unsubAuth = derivService.on("authorize", (data: any) => {
       if (!data.error) {
-        setIsAuthorized(true);
+        useConnectionStore.setState({
+          isAuthorized: true, derivLoading: false,
+          derivTokenExpired: false, derivError: null,
+        });
         setBalance(data.authorize.balance);
         derivService.subscribeProposalOpenContract();
         derivService.send({ balance: 1, subscribe: 1 });
+        logger.system(`✓ Autorização Deriv confirmada | ${data.authorize.loginid}`);
         // O feed inicial é configurado pelo efeito market/symbol/timeframe abaixo.
       } else {
-        logger.error(`Auth Deriv: ${data.error.message}`);
+        if (String(data.error.code) === "AUTH_TOKEN_INVALID") {
+          useConnectionStore.getState().handleDerivAuthFailure(
+            "Token Deriv inválido ou expirado. Insere um novo token para continuar."
+          );
+        } else {
+          useConnectionStore.setState({
+            isAuthorized: false, derivLoading: false,
+            derivError: data.error.message || "Falha na autorização Deriv.",
+          });
+          logger.error(`Auth Deriv: ${data.error.message || "Falha na autorização."}`);
+        }
       }
     });
 

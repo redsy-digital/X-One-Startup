@@ -87,7 +87,8 @@ export interface TradeHistory {
   id: string;
   time: number;
   symbol: string;
-  type: "CALL" | "PUT";
+  type: "CALL" | "PUT" | "DIGITUNDER" | "DIGITOVER" | "DIGITMATCH" | "DIGITDIFF" | "DIGITEVEN" | "DIGITODD" | "ACCU";
+  targetDigit?: number;
   stake: number;
   status: "WON" | "LOST" | "PENDING";
   profit?: number;

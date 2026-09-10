@@ -10,7 +10,10 @@
     "clean": "rm -rf dist",
     "lint": "tsc --noEmit",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "test:forex:decision": "vitest run src/forex/decision-engine",
+    "test:forex:proposal": "vitest run src/forex/proposal",
+    "test:forex:demo": "vitest run src/forex/demo"
   },
   "dependencies": {
     "@base-ui/react": "^1.3.0",

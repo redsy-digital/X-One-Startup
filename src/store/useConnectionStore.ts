@@ -37,6 +37,7 @@ interface ConnectionState {
   connectWithPAT: (pat: string) => Promise<string | null>;
   switchAccount: (isDemo: boolean) => void;
   disconnectDeriv: () => Promise<void>;
+  handleDerivAuthFailure: (message: string) => void;
 
   // Setters
   setIsAuthorized: (val: boolean) => void;
@@ -116,7 +117,7 @@ export const useConnectionStore = create<ConnectionState>((set, get) => ({
     const { supabaseUser } = get();
     if (!supabaseUser) return "Utilizador não autenticado.";
 
-    set({ derivLoading: true, derivError: null });
+    set({ derivLoading: true, derivError: null, derivTokenExpired: false });
 
     try {
       // 1. Buscar contas via REST
@@ -182,8 +183,20 @@ export const useConnectionStore = create<ConnectionState>((set, get) => ({
 
       return null; // sem erro
     } catch (e: any) {
-      const msg = e.message || "Erro ao conectar à Deriv.";
-      set({ derivLoading: false, derivError: msg });
+      const isAuthFailure = e?.code === "AUTH_TOKEN_INVALID" || e?.status === 401 || e?.status === 403;
+      const msg = isAuthFailure
+        ? "Token Deriv inválido ou expirado. Insere um novo token para continuar."
+        : (e.message || "Erro ao conectar à Deriv.");
+      if (isAuthFailure) {
+        logger.error(`Autenticação Deriv recusada: ${msg}`);
+        set({
+          derivLoading: false, derivError: msg, derivTokenExpired: true,
+          isAuthorized: false, derivAccounts: [], activeAccount: null,
+          balance: null, token: "",
+        });
+      } else {
+        set({ derivLoading: false, derivError: msg });
+      }
       return msg;
     }
   },
@@ -214,6 +227,28 @@ export const useConnectionStore = create<ConnectionState>((set, get) => ({
     // Reconecta com o mesmo PAT mas para outra conta (novo OTP)
     derivService.setToken(token, target.is_demo);
     derivService.connect(target.account_id, target.is_demo);
+  },
+
+  // ── Falha de autenticação Deriv ──────────────────────────────────────────
+
+  handleDerivAuthFailure: (message: string) => {
+    const { supabaseUser } = get();
+    const friendly = message || "Token Deriv inválido ou expirado. Insere um novo token para continuar.";
+
+    derivService.disconnect();
+    set({
+      derivAccounts: [], activeAccount: null, isAuthorized: false,
+      balance: null, token: "", derivTokenExpired: true,
+      derivLoading: false, derivError: friendly,
+    });
+
+    logger.error(`Autenticação Deriv recusada — ${friendly}`);
+
+    if (supabaseUser) {
+      void supabase.from("deriv_connections")
+        .update({ is_active: false })
+        .eq("user_id", supabaseUser.id);
+    }
   },
 
   // ── Desconectar ───────────────────────────────────────────────────────────
@@ -277,7 +312,10 @@ async function _loadDerivConnection(set: any) {
     activeAccount: active,
     isDemo: active.is_demo,
     token: pat,
-    derivLoading: false,  // conexão carregada — sem flash
+    isAuthorized: false,
+    derivLoading: true,
+    derivError: null,
+    derivTokenExpired: false,
   });
 
   // Reconecta automaticamente

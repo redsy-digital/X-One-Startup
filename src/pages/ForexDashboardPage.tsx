@@ -19,13 +19,16 @@ import { logger } from "../lib/logger";
 import { getTradeHistory } from "../lib/storage";
 import type { TradeHistory } from "../types";
 import { useConnectionStore, useMarketStore, useForexRiskStore } from "../store";
+import { useBotStore } from "../store/useBotStore";
+import { useForexRuntimeStore } from "../store/useForexRuntimeStore";
 import { ForexFeatureEngineV1 } from "../forex/features";
 import { ForexStructureEngineV1 } from "../forex/structure";
 import { ForexRegimeEngineV1 } from "../forex/regime";
 import { ForexDirectionEngineV1, FOREX_DIRECTION_DEFAULT_CONFIG } from "../forex/direction";
+import { ForexExperimentalAtrDirectionV1 } from "../forex/direction/experimental";
 import { getForexSession } from "../forex/session";
-import { evaluateForexCalendar } from "../forex/calendar/engine";
 import { DerivForexCalendarProvider } from "../forex/calendar/deriv";
+import { ForexCalendarServiceImpl } from "../forex/calendar/service";
 import { extractEvents } from "../forex/calendar/deriv";
 import type { ForexCalendarDecision, ForexEconomicEvent, ForexRegime, ForexDirection } from "../forex/decision-engine/types";
 import { forexMarketDataService, isWithinSchedule } from "../forex/market-data";
@@ -130,7 +133,8 @@ export const ForexDashboardPage = () => {
   const { isAuthorized, balance } = useConnectionStore();
   const { market, setMarket, symbol, setSymbol, candles, ticks, timeframe, setTimeframe } = useMarketStore();
   const { config: risk } = useForexRiskStore();
-  const [botRunning, setBotRunning] = React.useState(false);
+  const { isBotRunning: botRunning, toggleBot } = useBotStore();
+  const runtime = useForexRuntimeStore();
   const [showRisk, setShowRisk] = React.useState(false);
   const [now, setNow] = React.useState(Date.now());
   const [pipSize, setPipSize] = React.useState(0.00001);
@@ -143,7 +147,8 @@ export const ForexDashboardPage = () => {
   const [calendarError, setCalendarError] = React.useState<string | null>(null);
   const [history, setHistory] = React.useState<TradeHistory[]>([]);
   const connectionHealth = derivService.getConnectionHealth();
-  const decisionEngineOperational = false; // D11-D14 ainda não foram ligados ao fluxo operacional.
+  const decisionEngineOperational = runtime.lastDecision !== null;
+
 
   const currentPrice = ticks.at(-1)?.price ?? candles.at(-1)?.close ?? null;
   const previousPrice = ticks.at(-2)?.price ?? candles.at(-2)?.close ?? null;
@@ -151,7 +156,7 @@ export const ForexDashboardPage = () => {
   const session = React.useMemo(() => getForexSession(now), [now]);
 
   const analysis = React.useMemo(() => {
-    if (candles.length < 60) return { feature: null, structure: null, regime: null, direction: null, error: `Dados insuficientes (${candles.length}/60 candles).` };
+    if (candles.length < 60) return { feature: null, structure: null, regime: null, direction: null, experimentalDirection: null, error: `Dados insuficientes (${candles.length}/60 candles).` };
     try {
       const marketContext = forexMarketDataService.toDecisionMarketContext({
         symbol: FOREX_SYMBOL,
@@ -168,11 +173,14 @@ export const ForexDashboardPage = () => {
       const structure = new ForexStructureEngineV1().analyze({ candles, timeframeMinutes: Math.max(1, timeframe / 60), atr, calculatedAt: Math.floor(now / 1000) });
       const regime = new ForexRegimeEngineV1().classify(feature, marketContext, structure, session);
       const direction = new ForexDirectionEngineV1(FOREX_DIRECTION_DEFAULT_CONFIG).decide(feature, regime, marketContext, structure);
-      return { feature, structure, regime: regime.snapshot, direction: direction.snapshot, error: null };
+      const experimentalDirection = new ForexExperimentalAtrDirectionV1().decide(candles, Math.max(1, timeframe / 60), Math.floor(now / 1000));
+      return { feature, structure, regime: regime.snapshot, direction: direction.snapshot, experimentalDirection, error: null };
     } catch (e: any) {
-      return { feature: null, structure: null, regime: null, direction: null, error: e?.message || "Falha ao calcular o estado analítico." };
+      return { feature: null, structure: null, regime: null, direction: null, experimentalDirection: null, error: e?.message || "Falha ao calcular o estado analítico." };
     }
   }, [candles, currentPrice, marketOpen, now, pipSize, session, timeframe]);
+
+  const experimentalCandidate = runtime.experimentalBridge ?? analysis.experimentalDirection;
 
   const refreshHistory = React.useCallback(() => {
     const all = getTradeHistory();
@@ -192,18 +200,12 @@ export const ForexDashboardPage = () => {
       setScheduleLabel(schedule?.openTimes?.length ? `${schedule.openTimes.join(" · ")} → ${schedule.closeTimes.join(" · ")}` : "Sem janela");
 
       const provider = new DerivForexCalendarProvider(derivService);
-      const start = Math.floor(Date.now() / 1000) - 2 * 3600;
-      const end = Math.floor(Date.now() / 1000) + 24 * 3600;
+      const calendarService = new ForexCalendarServiceImpl(provider);
+      const nowEpoch = Math.floor(Date.now() / 1000);
       try {
-        const [eur, usd] = await Promise.all([
-          provider.getEvents("EUR", start, end),
-          provider.getEvents("USD", start, end),
-        ]);
-        const unique = new Map<string, ForexEconomicEvent>();
-        [...eur, ...usd].forEach(e => unique.set(e.eventId, e));
-        const list = [...unique.values()].sort((a, b) => a.eventTime - b.eventTime);
-        setEvents(list);
-        setCalendar(evaluateForexCalendar({ now: Math.floor(Date.now() / 1000), events: list }));
+        const snapshot = await calendarService.getSnapshot(["EUR", "USD"], nowEpoch);
+        setEvents(snapshot.relevantEvents);
+        setCalendar(snapshot);
         setCalendarError(null);
       } catch (calendarErr: any) {
         // Do not turn a calendar transport problem into a generic dashboard error.
@@ -258,9 +260,9 @@ export const ForexDashboardPage = () => {
   })();
   const dataFreshness = candles.at(-1)?.time ?? null;
   const freshnessSec = dataFreshness ? Math.max(0, Math.floor(now / 1000 - dataFreshness)) : Infinity;
-  const engineState = !isAuthorized ? "WAIT_DATA" : !marketOpen ? "WAIT_MARKET" : candles.length < 60 ? "WAIT_DATA" : !decisionEngineOperational ? "ENGINE_NOT_READY" : calendar?.state === "BLOCK" ? "NEWS_BLOCK" : analysis.direction?.tradable ? "READY" : "WAIT_SIGNAL";
-  const tradeGateOpen = decisionEngineOperational && isAuthorized && marketOpen && candles.length >= 60 && freshnessSec < 180 && !!analysis.direction?.tradable && !!calendar && calendar.state === "CLEAR";
-  const tradeGateReason = !isAuthorized ? "Conta Deriv não autorizada" : !marketOpen ? "Mercado fechado" : candles.length < 60 ? "Histórico insuficiente" : !decisionEngineOperational ? "Decision Engine V1 ainda não operacional (D11–D14)" : calendarError ? "Calendário económico indisponível" : calendar?.state === "BLOCK" ? "Bloqueado por calendário" : !analysis.direction?.tradable ? "Sem sinal CALL/PUT aprovado" : "Todos os gates aprovados";
+  const engineState = runtime.stage !== "STOPPED" ? runtime.stage : (!isAuthorized ? "WAIT_DATA" : !marketOpen ? "WAIT_MARKET" : candles.length < 60 ? "WAIT_DATA" : analysis.direction?.direction === "NONE" ? "WAIT_SIGNAL" : "SCANNING");
+  const tradeGateOpen = runtime.stage === "PROPOSAL" || runtime.stage === "GUARD" || runtime.stage === "EXECUTING" || runtime.stage === "OPEN";
+  const tradeGateReason = runtime.message || (!isAuthorized ? "Conta Deriv não autorizada" : !marketOpen ? "Mercado fechado" : candles.length < 60 ? "Histórico insuficiente" : analysis.direction?.direction === "NONE" ? "Sem sinal CALL/PUT aprovado" : "A aguardar runtime");
   const nextEvents = events.filter(e => e.eventTime >= Math.floor(now / 1000)).slice(0, 5);
   const cooldownUntil = lastLoss ? lastLoss.time + risk.cooldownAfterLossSeconds * 1000 : 0;
   const cooldownRemaining = Math.max(0, Math.ceil((cooldownUntil - now) / 1000));
@@ -276,7 +278,7 @@ export const ForexDashboardPage = () => {
             <Badge className={cn("text-[8px]", marketOpen ? "bg-emerald-500/10 text-emerald-400 border-emerald-500/20" : "bg-red-500/10 text-red-400 border-red-500/20")}>{marketOpen ? "MERCADO ABERTO" : "MERCADO FECHADO"}</Badge>
           </div>
           <h1 className="text-2xl md:text-3xl font-black tracking-tight mt-1">Forex Dashboard</h1>
-          <p className="text-[10px] text-muted-foreground mt-1">{FOREX_NAME} · New API · Rise/Fall · Decision Engine em construção controlada</p>
+          <p className="text-[10px] text-muted-foreground mt-1">{FOREX_NAME} · New API · Rise/Fall · Decision Engine V1 · sinal experimental separado da execução</p>
         </div>
         <div className="flex items-center gap-2 flex-wrap">
           <Button variant="outline" onClick={() => refreshMarketAndCalendar()} disabled={refreshing} className="h-10 text-[10px] font-black uppercase border-white/10">
@@ -285,7 +287,7 @@ export const ForexDashboardPage = () => {
           <Button variant="outline" onClick={() => setShowRisk(true)} className="h-10 text-[10px] font-black uppercase border-emerald-500/30 text-emerald-300">
             <SlidersHorizontal className="w-3.5 h-3.5 mr-2" /> Gestão de risco
           </Button>
-          <Button onClick={() => setBotRunning(v => !v)} disabled={!isAuthorized || !marketOpen} className={cn("h-10 min-w-36 text-[10px] font-black uppercase", botRunning ? "bg-red-600 hover:bg-red-700" : "bg-emerald-600 hover:bg-emerald-700")}>
+          <Button onClick={() => toggleBot()} disabled={!isAuthorized || (!botRunning && !marketOpen)} className={cn("h-10 min-w-36 text-[10px] font-black uppercase", botRunning ? "bg-red-600 hover:bg-red-700" : "bg-emerald-600 hover:bg-emerald-700")}>
             <Power className={cn("w-4 h-4 mr-2", botRunning && "animate-pulse")} /> {botRunning ? "Stop Bot" : "Start Bot"}
           </Button>
         </div>
@@ -300,6 +302,7 @@ export const ForexDashboardPage = () => {
           { icon: Wallet, label: "Saldo", value: balance == null ? "—" : `$${Number(balance).toFixed(2)}`, sub: "conta Deriv", cls: "text-white" },
           { icon: Target, label: "P&L Forex", value: fmtMoney(pnl), sub: `${wins}W / ${losses}L`, cls: pnl >= 0 ? "text-emerald-400" : "text-red-400" },
           { icon: Gauge, label: "Engine", value: stateLabel(engineState), sub: `score ${analysis.direction ? analysis.direction.rawScore.toFixed(2) : "—"}`, cls: engineState === "READY" ? "text-emerald-400" : "text-amber-300" },
+          { icon: Target, label: "Candidato experimental", value: experimentalCandidate?.direction ?? "NONE", sub: experimentalCandidate ? `ATR14 INVERSE · ${experimentalCandidate.candidate ? "candidato ativo" : "sem candidato"} · não executável` : "aguardando dados", cls: experimentalCandidate?.direction === "CALL" ? "text-emerald-400" : experimentalCandidate?.direction === "PUT" ? "text-red-400" : "text-amber-300" },
           { icon: Clock3, label: "Sessão", value: session.session.replace("_", " "), sub: session.overlap ? "overlap" : "UTC", cls: "text-cyan-300" },
           { icon: CalendarDays, label: "Calendário", value: calendarLabel(calendar), sub: calendarError ? "indisponível" : `${nextEvents.length} próximos`, cls: calendar?.state === "CLEAR" ? "text-emerald-400" : "text-amber-300" },
           { icon: connectionHealth.connected ? Wifi : WifiOff, label: "Conexão", value: connectionHealth.connected ? "CONECTADO" : "OFFLINE", sub: connectionHealth.connected ? `última msg ${minutesAgo(connectionHealth.lastMessageAt ? Math.floor(connectionHealth.lastMessageAt / 1000) : null)}` : "Deriv WebSocket", cls: connectionHealth.connected ? "text-emerald-400" : "text-red-400" },
@@ -344,6 +347,27 @@ export const ForexDashboardPage = () => {
             </div>
           </NeonCard>
 
+          {/* Runtime truth */}
+          <NeonCard variant="cyan" className="p-4">
+            <div className="flex items-center justify-between mb-3">
+              <div><p className="text-[9px] uppercase tracking-widest text-muted-foreground font-black">D19 Runtime Integration</p>
+              <p className="text-base font-black mt-1">{stateLabel(runtime.stage)}</p></div>
+              <Badge className={cn(runtime.demoVerified ? "bg-emerald-500/10 text-emerald-300 border-emerald-500/20" : "bg-red-500/10 text-red-300 border-red-500/20")}>{runtime.demoVerified ? "DEMO VERIFIED" : "DEMO NÃO VERIFICADA"}</Badge>
+            </div>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+              <div className="rounded-xl border border-white/5 bg-black/20 p-3"><p className="text-[8px] uppercase text-muted-foreground">Avaliações</p><p className="text-lg font-black">{runtime.evaluations}</p></div>
+              <div className="rounded-xl border border-white/5 bg-black/20 p-3"><p className="text-[8px] uppercase text-muted-foreground">Proposal</p><p className="text-sm font-black">{runtime.lastProposal?.id ?? "—"}</p></div>
+              <div className="rounded-xl border border-white/5 bg-black/20 p-3"><p className="text-[8px] uppercase text-muted-foreground">Contrato</p><p className="text-sm font-black">{runtime.activeContract?.contractId ?? "—"}</p></div>
+              <div className="rounded-xl border border-white/5 bg-black/20 p-3"><p className="text-[8px] uppercase text-muted-foreground">Último resultado</p><p className="text-sm font-black">{runtime.lastResult?.status ?? "—"}</p></div>
+            </div>
+            <div className="mt-3 rounded-xl border border-white/5 bg-black/20 p-3 text-[9px] text-muted-foreground leading-relaxed">{runtime.message}</div>
+            <div className="mt-2 rounded-xl border border-amber-500/15 bg-amber-500/5 p-3">
+              <div className="flex items-center justify-between gap-2"><span className="text-[8px] uppercase tracking-widest font-black text-amber-300">Research Direction Bridge</span><Badge className="text-[7px] bg-amber-500/10 text-amber-300 border-amber-500/20">RESEARCH ONLY</Badge></div>
+              <div className="flex items-end justify-between gap-3 mt-2"><div><p className="text-2xl font-black">{runtime.experimentalBridge?.direction ?? "—"}</p><p className="text-[8px] text-muted-foreground">{runtime.experimentalBridge?.reason ?? "Ainda sem avaliação do runtime."}</p></div><div className="text-right"><p className="text-[8px] text-muted-foreground">score / conf.</p><p className="text-xs font-black">{runtime.experimentalBridge ? `${runtime.experimentalBridge.score.toFixed(3)} / ${runtime.experimentalBridge.confidence.toFixed(3)}` : "—"}</p></div></div>
+              <div className="grid grid-cols-2 gap-2 mt-2 text-[8px]"><div className="rounded-lg border border-white/5 bg-black/20 p-2"><span className="text-muted-foreground">Produção</span><span className="ml-1 font-black">NÃO ELEGÍVEL</span></div><div className="rounded-lg border border-white/5 bg-black/20 p-2"><span className="text-muted-foreground">Execução</span><span className="ml-1 font-black">BLOQUEADA</span></div></div>
+            </div>
+          </NeonCard>
+
           {/* Decision status */}
           <NeonCard variant="purple" className="p-4">
             <div className="flex items-center justify-between gap-3 mb-3">
@@ -352,13 +376,14 @@ export const ForexDashboardPage = () => {
             </div>
             <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
               <div className="rounded-xl border border-white/5 bg-black/20 p-3"><p className="text-[8px] uppercase text-muted-foreground">Direção</p><p className="text-lg font-black">{analysis.direction?.direction ?? "NONE"}</p><p className="text-[8px] text-muted-foreground">CALL/PUT</p></div>
+              <div className="rounded-xl border border-amber-500/20 bg-amber-500/5 p-3"><p className="text-[8px] uppercase text-amber-300">Experimental Bridge</p><p className="text-lg font-black">{experimentalCandidate?.direction ?? "NONE"}</p><p className="text-[8px] text-amber-200/70">{experimentalCandidate?.candidate ? "CANDIDATO CALL/PUT" : "SEM CANDIDATO"} · não autoriza BUY</p></div>
               <div className="rounded-xl border border-white/5 bg-black/20 p-3"><p className="text-[8px] uppercase text-muted-foreground">Score</p><p className="text-lg font-black">{analysis.direction ? analysis.direction.rawScore.toFixed(3) : "—"}</p><p className="text-[8px] text-muted-foreground">não é probabilidade</p></div>
               <div className="rounded-xl border border-white/5 bg-black/20 p-3"><p className="text-[8px] uppercase text-muted-foreground">Regime</p><p className="text-sm font-black">{analysis.regime?.regime ?? "UNKNOWN"}</p><p className="text-[8px] text-muted-foreground">conf. {analysis.regime ? `${Math.round(analysis.regime.confidence * 100)}%` : "—"}</p></div>
               <div className="rounded-xl border border-white/5 bg-black/20 p-3"><p className="text-[8px] uppercase text-muted-foreground">Estrutura</p><p className="text-sm font-black">{analysis.structure?.direction ?? "UNKNOWN"}</p><p className="text-[8px] text-muted-foreground">{analysis.structure?.event ?? "NONE"}</p></div>
             </div>
             <div className="mt-3 flex items-start gap-2 rounded-xl border border-amber-500/15 bg-amber-500/5 p-3 text-[9px] text-amber-200/80 leading-relaxed">
               <Info className="w-3.5 h-3.5 shrink-0 mt-0.5" />
-              <span>{analysis.error ?? "O Direction Engine V1 só promove evidência explicitamente aprovada. A configuração actual não contém pesos produtivos, por isso o dashboard mostra NONE até a próxima fase de implementação."}</span>
+              <span>{runtime.message || analysis.error || "Runtime ainda não realizou uma avaliação operacional."}</span>
             </div>
           </NeonCard>
 
@@ -392,7 +417,7 @@ export const ForexDashboardPage = () => {
           <NeonCard variant="cyan" className="p-4">
             <div className="flex items-center justify-between"><p className="text-[9px] uppercase tracking-widest text-muted-foreground font-black">Bot Forex</p><div className={cn("w-2 h-2 rounded-full", botRunning ? "bg-emerald-400 animate-pulse" : "bg-slate-600")} /></div>
             <p className="text-xl font-black mt-2">{botRunning ? "RUNNING" : "STOPPED"}</p>
-            <p className="text-[9px] text-muted-foreground mt-1">{botRunning ? (tradeGateOpen ? "Interface armada; aguardando integração de execução." : `Armado, mas bloqueado: ${tradeGateReason}.`) : "STOPPED · ativação manual pendente."}</p>
+            <p className="text-[9px] text-muted-foreground mt-1">{botRunning ? (tradeGateOpen ? "Runtime integrado; a aguardar oportunidade válida." : `Activo, mas bloqueado: ${tradeGateReason}.`) : "STOPPED · ativação manual pendente."}</p>
             <div className="grid grid-cols-2 gap-2 mt-3"><div className="rounded-lg bg-black/20 border border-white/5 p-2"><p className="text-[8px] text-muted-foreground">Contrato</p><p className="text-xs font-black">Rise/Fall</p></div><div className="rounded-lg bg-black/20 border border-white/5 p-2"><p className="text-[8px] text-muted-foreground">Stake</p><p className="text-xs font-black">${risk.maxStakePerTrade.toFixed(2)} máx.</p></div></div>
           </NeonCard>
 
@@ -430,12 +455,12 @@ export const ForexDashboardPage = () => {
 
           <NeonCard variant="purple" className="p-4">
             <div className="flex items-center justify-between mb-2"><div className="flex items-center gap-2"><Zap className="w-4 h-4 text-purple-300" /><p className="text-[9px] uppercase tracking-widest font-black">Pipeline</p></div><span className="text-[8px] text-muted-foreground">V1</span></div>
-            {[['Market', marketOpen, 'Trading Times'], ['Data', candles.length >= 60 && freshnessSec < 180, '60+ candles / fresh'], ['Features', !!analysis.feature, 'sem gaps'], ['Regime', !!analysis.regime && analysis.regime.regime !== 'UNKNOWN', 'compatível'], ['Signal', !!analysis.direction?.tradable, 'CALL/PUT'], ['Calendar', !!calendar && !calendarError && calendar.state !== 'BLOCK', 'fonte válida'], ['Risk', consecutiveLosses < risk.maxConsecutiveLosses && cooldownRemaining === 0, 'gate de risco'], ['Contract', true, 'baseline validado']].map(([label, ok, sub]) => <div key={String(label)} className="flex items-center gap-2 py-1.5 border-b border-white/5 last:border-0"><span className={cn("w-1.5 h-1.5 rounded-full", ok ? "bg-emerald-400" : "bg-red-400")} /><span className="text-[9px] font-bold w-16">{label}</span><span className="text-[8px] text-muted-foreground truncate">{sub}</span>{ok ? <CheckCircle2 className="ml-auto w-3 h-3 text-emerald-400" /> : <AlertTriangle className="ml-auto w-3 h-3 text-red-400" />}</div>)}
+            {[['Market', marketOpen, 'Trading Times'], ['Data', candles.length >= 60 && freshnessSec < 180, '60+ candles / fresh'], ['Features', !!analysis.feature, 'sem gaps'], ['Regime', !!analysis.regime && analysis.regime.regime !== 'UNKNOWN', 'compatível'], ['Signal', !!analysis.direction?.tradable, 'CALL/PUT'], ['Calendar', !!calendar && !calendarError && calendar.state !== 'BLOCK', 'fonte válida'], ['Risk', consecutiveLosses < risk.maxConsecutiveLosses && cooldownRemaining === 0, 'gate de risco'], ['Research', !!experimentalCandidate?.candidate, 'CALL/PUT experimental · não executável'], ['Contract', !!runtime.lastProposal, 'D15 Proposal']].map(([label, ok, sub]) => <div key={String(label)} className="flex items-center gap-2 py-1.5 border-b border-white/5 last:border-0"><span className={cn("w-1.5 h-1.5 rounded-full", ok ? "bg-emerald-400" : "bg-red-400")} /><span className="text-[9px] font-bold w-16">{label}</span><span className="text-[8px] text-muted-foreground truncate">{sub}</span>{ok ? <CheckCircle2 className="ml-auto w-3 h-3 text-emerald-400" /> : <AlertTriangle className="ml-auto w-3 h-3 text-red-400" />}</div>)}
           </NeonCard>
         </div>
       </div>
 
-      <div className="rounded-xl border border-emerald-500/10 bg-emerald-500/[0.02] p-3 flex items-start gap-2 text-[9px] text-muted-foreground"><Bell className="w-3.5 h-3.5 text-emerald-400 shrink-0" /> O dashboard é a camada operacional/visual. O botão Start/Stop nesta fase controla apenas o estado visual do módulo Forex; não dispara BUY até o pipeline de execução Forex ser ligado.</div>
+      <div className="rounded-xl border border-emerald-500/10 bg-emerald-500/[0.02] p-3 flex items-start gap-2 text-[9px] text-muted-foreground"><Bell className="w-3.5 h-3.5 text-emerald-400 shrink-0" /> D19 Runtime Integration: o botão Start/Stop controla o runtime Forex. BUY só pode ocorrer após D13 → D15 → D16 e a verificação DEMO-ONLY.</div>
 
       <AnimatePresence>{showRisk && <RiskModal onClose={() => setShowRisk(false)} />}</AnimatePresence>
     </div>

@@ -6,6 +6,9 @@ export interface ForexCalendarConfig {
   mediumImpactWatchMinutes: number;
   blockMediumImpact: boolean;
   blockUnknownImpact: boolean;
+  cacheTtlSeconds: number;
+  lookAheadMinutes: number;
+  lookBehindMinutes: number;
 }
 
 export const DEFAULT_FOREX_CALENDAR_CONFIG: ForexCalendarConfig = {
@@ -14,6 +17,9 @@ export const DEFAULT_FOREX_CALENDAR_CONFIG: ForexCalendarConfig = {
   mediumImpactWatchMinutes: 30,
   blockMediumImpact: false,
   blockUnknownImpact: true,
+  cacheTtlSeconds: 60,
+  lookAheadMinutes: 180,
+  lookBehindMinutes: 30,
 };
 
 export interface ForexCalendarQuery {

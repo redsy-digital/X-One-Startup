@@ -1,5 +1,6 @@
 import { logger } from "./logger";
 import { Candle } from "../types";
+import type { DigitsContractType } from "../digits/types";
 
 /**
  * Deriv API Service — New API (api.derivws.com)
@@ -11,7 +12,48 @@ import { Candle } from "../types";
 
 const DERIV_REST_BASE = "https://api.derivws.com";
 
+// Public WebSocket app_id used exclusively by the native public economic-calendar
+// transport. This is intentionally separate from VITE_DERIV_APP_ID, which belongs
+// to the authenticated New API application. Deriv documents 1089 as the public
+// testing app_id; production can override it with VITE_DERIV_PUBLIC_APP_ID.
+const DERIV_PUBLIC_APP_ID = String(import.meta.env.VITE_DERIV_PUBLIC_APP_ID || "1089");
+const DERIV_PUBLIC_WS_BASE = "wss://ws.derivws.com/websockets/v3";
+
+export function buildEconomicCalendarRequest(
+  currency?: string,
+  startDate?: number,
+  endDate?: number,
+  req_id?: number
+) {
+  return {
+    economic_calendar: 1,
+    ...(currency ? { currency } : {}),
+    ...(startDate !== undefined ? { start_date: startDate } : {}),
+    ...(endDate !== undefined ? { end_date: endDate } : {}),
+    ...(req_id !== undefined ? { req_id } : {}),
+  };
+}
+
 export type DerivMessage = { msg_type: string; [key: string]: any };
+
+/** Erro de autenticação da credencial PAT na Deriv. */
+export class DerivAuthError extends Error {
+  readonly status: number;
+  readonly code = "AUTH_TOKEN_INVALID" as const;
+
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = "DerivAuthError";
+    this.status = status;
+  }
+}
+
+function isDerivAuthError(error: unknown): error is DerivAuthError {
+  return error instanceof DerivAuthError || (
+    typeof error === "object" && error !== null &&
+    (error as any).code === "AUTH_TOKEN_INVALID"
+  );
+}
 
 export class DerivService {
   private socket: WebSocket | null = null;
@@ -130,73 +172,68 @@ export class DerivService {
   }
 
   /**
-   * Deriv-native economic calendar. The current authenticated New API socket
-   * may reject this command as "Unrecognized request" even though Deriv still
-   * exposes the native economic_calendar command on its public WebSocket.
-   * Prefer the current socket; only fall back to Deriv's own public calendar
-   * transport when that exact capability is unavailable. No third-party data
-   * source is introduced.
+   * Deriv-native economic calendar.
+   *
+   * IMPORTANT:
+   * `economic_calendar` is not sent through the authenticated New API trading
+   * socket. The X-One uses a separate public WebSocket transport for this
+   * request, with an explicit public app_id in the URL. This is the exact
+   * pattern validated by the standalone calendar lab.
+   *
+   * The authenticated New API remains responsible for trading/account data;
+   * the public calendar transport is isolated to this method only:
+   * trading/authentication/proposals/buy remain entirely on the New API.
+   * No third-party calendar source is used.
    */
   async getEconomicCalendar(currency?: string, startDate?: number, endDate?: number) {
-    try {
-      const data = await this.request<any>({
-        economic_calendar: 1,
-        ...(currency ? { currency } : {}),
-        ...(startDate !== undefined ? { start_date: startDate } : {}),
-        ...(endDate !== undefined ? { end_date: endDate } : {}),
-      }, "economic_calendar");
-      if (data.error) throw new Error(data.error.message || "Erro em economic_calendar");
-      return data.economic_calendar ?? { events: [] };
-    } catch (error: any) {
-      const message = String(error?.message || error || "");
-      if (!/unrecognized request/i.test(message)) throw error;
-      logger.system("[Deriv] economic_calendar não é reconhecido no socket autenticado; a usar fallback nativo público da Deriv.");
-      return this.getEconomicCalendarPublic(currency, startDate, endDate);
-    }
+    return this.getEconomicCalendarPublic(currency, startDate, endDate);
   }
 
   private getEconomicCalendarPublic(currency?: string, startDate?: number, endDate?: number): Promise<any> {
     return new Promise((resolve, reject) => {
-      const ws = new WebSocket(`wss://ws.binaryws.com/websockets/v3?app_id=${encodeURIComponent(this.appId)}`);
-      const timeout = setTimeout(() => {
+      const wsUrl = `${DERIV_PUBLIC_WS_BASE}?app_id=${encodeURIComponent(DERIV_PUBLIC_APP_ID)}`;
+      logger.system(`[Deriv] Economic calendar public WS: app_id=${DERIV_PUBLIC_APP_ID}`);
+      const ws = new WebSocket(wsUrl);
+      const reqId = ++this.requestSeq;
+      let settled = false;
+
+      const finish = (fn: () => void) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timeout);
         try { ws.close(); } catch { /* noop */ }
-        reject(new Error("Timeout ao consultar o calendário económico nativo da Deriv."));
+        fn();
+      };
+
+      const timeout = setTimeout(() => {
+        finish(() => reject(new Error("Timeout ao consultar o calendário económico nativo da Deriv.")));
       }, 12000);
 
       ws.onopen = () => {
-        ws.send(JSON.stringify({
-          economic_calendar: 1,
-          ...(currency ? { currency } : {}),
-          ...(startDate !== undefined ? { start_date: startDate } : {}),
-          ...(endDate !== undefined ? { end_date: endDate } : {}),
-        }));
+        ws.send(JSON.stringify(buildEconomicCalendarRequest(currency, startDate, endDate, reqId)));
       };
 
       ws.onmessage = (event) => {
         try {
           const data = JSON.parse(event.data);
+
+          if (data.req_id !== undefined && Number(data.req_id) !== reqId) return;
+
           if (data.error) {
-            clearTimeout(timeout);
-            ws.close();
-            reject(new Error(data.error.message || "Erro em economic_calendar"));
+            finish(() => reject(new Error(data.error.message || "Erro em economic_calendar")));
             return;
           }
+
           if (data.msg_type === "economic_calendar") {
-            clearTimeout(timeout);
-            ws.close();
-            resolve(data.economic_calendar ?? { events: [] });
+            finish(() => resolve(data.economic_calendar ?? { events: [] }));
           }
         } catch (parseError: any) {
-          clearTimeout(timeout);
-          try { ws.close(); } catch { /* noop */ }
-          reject(new Error(parseError?.message || "Resposta inválida do calendário económico."));
+          finish(() => reject(new Error(parseError?.message || "Resposta inválida do calendário económico.")));
         }
       };
 
       ws.onerror = () => {
-        clearTimeout(timeout);
-        try { ws.close(); } catch { /* noop */ }
-        reject(new Error("Falha na ligação ao calendário económico nativo da Deriv."));
+        finish(() => reject(new Error("Falha na ligação ao calendário económico nativo da Deriv.")));
       };
     });
   }
@@ -348,25 +385,133 @@ export class DerivService {
     });
   }
 
-  getPriceProposal(
+  /**
+   * Digits V1 proposal. One fixed 1-tick contract is requested and the
+   * configured digit is sent as the barrier for the contracts that need it.
+   */
+  async getDigitsProposal(
     symbol: string,
-    contractType: "CALL" | "PUT",
+    contractType: DigitsContractType,
     amount: number,
-    duration: number,
-    durationUnit: string
+    duration = 1,
+    targetDigit = 9
   ) {
-    this.send({
+    if (!symbol) throw new Error("Símbolo Digits ausente.");
+    if (!Number.isFinite(amount) || amount <= 0) throw new Error("Stake Digits inválida.");
+
+    const needsDigit = ["DIGITUNDER", "DIGITOVER", "DIGITMATCH", "DIGITDIFF"].includes(contractType);
+    if (needsDigit && (!Number.isInteger(targetDigit) || targetDigit < 0 || targetDigit > 9)) {
+      throw new Error("Dígito alvo inválido. Deve estar entre 0 e 9.");
+    }
+
+    const data = await this.request<any>({
       proposal: 1,
       amount,
       basis: "stake",
       contract_type: contractType,
-      currency: "USD",
+      currency: this.accountCurrency,
       duration,
-      duration_unit: durationUnit,
-      underlying_symbol: symbol,  // renamed from "symbol" in new Deriv API
-    });
+      duration_unit: "t",
+      underlying_symbol: symbol,
+      ...(needsDigit ? { barrier: String(targetDigit) } : {}),
+    }, "proposal", 15000);
+
+    if (data.error) throw new Error(data.error.message || "Erro em proposal Digits");
+    if (!data.proposal?.id) throw new Error("Proposal Digits sem ID.");
+    return data.proposal;
   }
 
+  /**
+   * Accumulators (ACCU) V1 proposal. ACCU contracts have no fixed
+   * duration/duration_unit — the range is open-ended and only ends when the
+   * spot breaches the accumulator range, the user sells early, or an
+   * optional take_profit limit_order is hit. growthRate must be one of the
+   * five rates Deriv supports for ACCU: 0.01, 0.02, 0.03, 0.04, 0.05.
+   * See https://developers.deriv.com/docs/accumulator-options
+   */
+  async getAccumulatorsProposal(
+    symbol: string,
+    amount: number,
+    growthRate: number,
+    takeProfit?: number,
+  ) {
+    if (!symbol) throw new Error("Símbolo Accumulators ausente.");
+    if (!Number.isFinite(amount) || amount <= 0) throw new Error("Stake Accumulators inválida.");
+    const validRates = [0.01, 0.02, 0.03, 0.04, 0.05];
+    if (!validRates.includes(growthRate)) {
+      throw new Error("Growth Rate inválido. Deve ser um de: 1%, 2%, 3%, 4%, 5%.");
+    }
+
+    const data = await this.request<any>({
+      proposal: 1,
+      amount,
+      basis: "stake",
+      contract_type: "ACCU",
+      currency: this.accountCurrency,
+      symbol,
+      growth_rate: growthRate,
+      ...(takeProfit && takeProfit > 0 ? { limit_order: { take_profit: takeProfit } } : {}),
+    }, "proposal", 15000);
+
+    if (data.error) throw new Error(data.error.message || "Erro em proposal Accumulators");
+    if (!data.proposal?.id) throw new Error("Proposal Accumulators sem ID.");
+    return data.proposal;
+  }
+
+  /**
+   * Fecha um contrato antes da expiração (ou, no caso dos Accumulators, que
+   * não têm expiração fixa, a qualquer momento). price=0 vende ao preço de
+   * mercado ("sell at market"), tal como documentado pela Deriv.
+   */
+  async sellContract(contractId: string, price = 0) {
+    if (!contractId) throw new Error("Contract ID ausente para sell.");
+    const data = await this.request<any>({
+      sell: contractId,
+      price,
+    }, "sell", 15000);
+    if (data.error) throw new Error(data.error.message || "Erro em sell");
+    const sell = data.sell;
+    if (!sell) throw new Error("Resposta de sell vazia.");
+    return {
+      contractId: String(sell.contract_id ?? contractId),
+      soldFor: toFiniteNumber(sell.sold_for),
+      balanceAfter: toFiniteNumber(sell.balance_after),
+      transactionId: sell.transaction_id != null ? String(sell.transaction_id) : undefined,
+      raw: data,
+    };
+  }
+
+  /**
+   * New API authenticated buy. D17 uses this Promise-based gateway so the
+   * executor only reports success after Deriv returns a valid buy response
+   * containing a contract_id. No loginid is sent (New API).
+   */
+  async buyProposal(proposalId: string, price: number) {
+    if (!proposalId) throw new Error("Proposal ID ausente para buy.");
+    if (!Number.isFinite(price) || price <= 0) throw new Error("Preço da Proposal inválido para buy.");
+
+    const data = await this.request<any>({
+      buy: proposalId,
+      price,
+    }, "buy", 15000);
+
+    if (data.error) throw new Error(data.error.message || "Erro em buy");
+    const buy = data.buy;
+    if (!buy?.contract_id) throw new Error("Resposta de buy sem contract_id.");
+
+    return {
+      contractId: String(buy.contract_id),
+      transactionId: buy.transaction_id != null ? String(buy.transaction_id) : undefined,
+      buyPrice: toFiniteNumber(buy.buy_price),
+      payout: toFiniteNumber(buy.payout),
+      purchaseTime: toFiniteNumber(buy.purchase_time),
+      startTime: toFiniteNumber(buy.start_time),
+      balanceAfter: toFiniteNumber(buy.balance_after),
+      raw: data,
+    };
+  }
+
+  /** Legacy fire-and-forget helper retained for existing UI code. D17 does not use it. */
   buy(proposalId: string, price: number) {
     this.send({ buy: proposalId, price });
   }
@@ -385,7 +530,15 @@ export class DerivService {
       },
     });
 
-    if (!res.ok) throw new Error(`fetchAccounts failed: ${res.status}`);
+    if (!res.ok) {
+      if (res.status === 401 || res.status === 403) {
+        throw new DerivAuthError(
+          `Token Deriv inválido ou expirado (HTTP ${res.status}).`,
+          res.status
+        );
+      }
+      throw new Error(`fetchAccounts failed: ${res.status}`);
+    }
     const json = await res.json();
     return Array.isArray(json.data) ? json.data : [];
   }
@@ -404,7 +557,14 @@ export class DerivService {
       this.accountCurrency = String(demo.currency ?? this.accountCurrency);
       this._connectViaOTP(this.activeAccountId);
     } catch (e: any) {
-      if (epoch === this._epoch) this._emitAuthError(e.message);
+      if (epoch === this._epoch) {
+        this._emitAuthError(
+          isDerivAuthError(e)
+            ? "Token Deriv inválido ou expirado. Insere um novo token para continuar."
+            : (e.message || "Falha ao autenticar na Deriv."),
+          isDerivAuthError(e) ? e.code : "AuthError"
+        );
+      }
     }
   }
 
@@ -429,8 +589,15 @@ export class DerivService {
     } catch (e: any) {
       console.error(`[Deriv] OTP error (epoch ${epoch}):`, e.message);
       if (epoch === this._epoch) {
-        this._emitAuthError(e.message);
-        this._scheduleReconnect(epoch);
+        this._emitAuthError(
+          isDerivAuthError(e)
+            ? "Token Deriv inválido ou expirado. Insere um novo token para continuar."
+            : (e.message || "Falha na autenticação Deriv."),
+          isDerivAuthError(e) ? e.code : "AuthError"
+        );
+        // Não repetir automaticamente uma tentativa com a mesma credencial
+        // quando a própria Deriv recusou o PAT.
+        if (!isDerivAuthError(e)) this._scheduleReconnect(epoch);
       }
     }
   }
@@ -446,7 +613,15 @@ export class DerivService {
         },
       }
     );
-    if (!res.ok) throw new Error(`OTP failed: ${res.status}`);
+    if (!res.ok) {
+      if (res.status === 401 || res.status === 403) {
+        throw new DerivAuthError(
+          `Token Deriv inválido ou expirado (OTP recusado: HTTP ${res.status}).`,
+          res.status
+        );
+      }
+      throw new Error(`OTP failed: ${res.status}`);
+    }
     const json = await res.json();
     const url = json.data?.url ?? json.url;
     if (!url) throw new Error("OTP response missing WebSocket URL");
@@ -635,9 +810,9 @@ export class DerivService {
     this.listeners.get(type)?.forEach((cb) => cb(data));
   }
 
-  private _emitAuthError(message: string) {
+  private _emitAuthError(message: string, code = "AuthError") {
     logger.error(`Erro de autorização: ${message}`);
-    this._emit("authorize", { error: { code: "AuthError", message } });
+    this._emit("authorize", { error: { code, message } });
   }
 
   private _isDemo(account: any): boolean {
@@ -650,3 +825,13 @@ export class DerivService {
 }
 
 export const derivService = new DerivService();
+
+
+function toFiniteNumber(value: unknown): number | undefined {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string" && value.trim() !== "") {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : undefined;
+  }
+  return undefined;
+}
