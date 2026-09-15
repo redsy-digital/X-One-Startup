@@ -1,33 +1,49 @@
 import { create } from "zustand";
-import type { AccumulatorsRuntimeState } from "./types";
+import type { AccumulatorRuntimeState } from "./types";
 
-const INITIAL_RUNTIME: AccumulatorsRuntimeState = {
-  currentStake: 0,
+const INITIAL: AccumulatorRuntimeState = {
+  currentStake: 1,
   martingaleStep: 0,
   consecutiveLosses: 0,
-  currentStakeInTrade: null,
+  isProcessing: false,
   activeContractId: null,
   ticksElapsed: 0,
-  currentContractValue: null,
-  isManualTrade: false,
+  ticksTarget: 20,
+  currentValue: null,
+  currentProfit: null,
+  currentProfitPercent: null,
+  currentSpot: null,
+  currentHighBarrier: null,
+  currentLowBarrier: null,
+  lastContractId: null,
   lastStake: null,
   lastResult: null,
-  lastTradeAt: null,
   lastProfit: null,
-  lastTicks: null,
-  isProcessing: false,
+  lastTradeAt: null,
   entries: 0,
   error: null,
+  isManualContract: false,
+  activeCloseMode: null,
+  activeProfitTarget: null,
+  closeReason: null,
+  lastWasKnockout: false,
+  profitMartingaleActive: false,
+  sessionLimitReached: null,
+  chartPoints: [],
+  filterBlocked: false,
+  filterReasons: [],
+  filterWaitTicksRemaining: 0,
+  filterSamples: 0,
 };
 
-interface AccumulatorsRuntimeStore {
-  runtime: AccumulatorsRuntimeState;
-  setRuntime: (patch: Partial<AccumulatorsRuntimeState>) => void;
-  resetRuntime: (stake: number) => void;
+interface AccumulatorStore {
+  runtime: AccumulatorRuntimeState;
+  setRuntime: (patch: Partial<AccumulatorRuntimeState>) => void;
+  resetRuntime: (stake: number, ticksTarget: number) => void;
 }
 
-export const useAccumulatorsStore = create<AccumulatorsRuntimeStore>((set) => ({
-  runtime: INITIAL_RUNTIME,
-  setRuntime: (patch) => set((state) => ({ runtime: { ...state.runtime, ...patch } })),
-  resetRuntime: (stake) => set({ runtime: { ...INITIAL_RUNTIME, currentStake: stake } }),
+export const useAccumulatorStore = create<AccumulatorStore>((set) => ({
+  runtime: INITIAL,
+  setRuntime: (patch) => set((s) => ({ runtime: { ...s.runtime, ...patch } })),
+  resetRuntime: (stake, ticksTarget) => set({ runtime: { ...INITIAL, currentStake: stake, ticksTarget } }),
 }));

@@ -1,30 +1,13 @@
-// Accumulators V1 — entrada fixa, sem indicadores nem previsão avançada.
-// Espelha a filosofia de src/digits/types.ts: apenas um contrato (ACCU),
-// o utilizador escolhe o ativo (símbolo vem do useMarketStore, partilhado
-// com Digits), a percentagem de Growth Rate e o número de ticks até o
-// próprio bot fechar o contrato (a Deriv não aceita "duration" para ACCU —
-// o fecho por contagem de ticks é feito pela aplicação via sell()).
+export type AccumulatorCloseMode = "ticks" | "profit_percent" | "contract_take_profit";
+import type { AccumulatorFiltersConfig } from "./filters";
 
-export const ACCUMULATORS_GROWTH_RATES = [0.01, 0.02, 0.03, 0.04, 0.05] as const;
-export type AccumulatorsGrowthRate = typeof ACCUMULATORS_GROWTH_RATES[number];
-
-export function isAccumulatorsGrowthRate(value: unknown): value is AccumulatorsGrowthRate {
-  return typeof value === "number" && (ACCUMULATORS_GROWTH_RATES as readonly number[]).includes(value);
-}
-
-export function growthRateLabel(rate: AccumulatorsGrowthRate): string {
-  return `${Math.round(rate * 100)}%`;
-}
-
-export interface AccumulatorsConfig {
-  /** Growth rate por tick, um de 1%–5% (0.01–0.05). */
-  growthRate: AccumulatorsGrowthRate;
-  /** Número de ticks decorridos após os quais o bot fecha o contrato (sell). */
-  tickCount: number;
-}
-
-export interface AccumulatorsRiskConfig {
+export interface AccumulatorConfig {
+  symbol: string;
+  /** Tick threshold used when closeMode === "ticks". ACCU itself has no expiry. */
+  durationTicks: number;
+  /** Base stake used by the normal risk progression. */
   stake: number;
+  /** Session-level take profit (kept separate from contract-level TP). */
   targetProfit: number;
   stopLoss: number;
   useMartingale: boolean;
@@ -32,30 +15,68 @@ export interface AccumulatorsRiskConfig {
   maxMartingaleSteps: number;
   maxConsecutiveLosses: number;
   cooldownAfterLoss: number;
+  growthRate: number;
+
+  /** How X-One decides when to sell the current ACCU. */
+  closeMode: AccumulatorCloseMode;
+  /** Close when contract profit_percentage reaches this value. 25 = 25%, 200 = 200%. */
+  profitPercentTarget: number;
+  /** Close when contract profit reaches this amount in account currency. */
+  contractTakeProfit: number;
+
+  /** After an ACCU knockout, temporarily use the configured profit target on the next contract. */
+  useProfitMartingale: boolean;
+  profitMartingaleTarget: number;
+  filters: AccumulatorFiltersConfig;
 }
 
-export type AccumulatorsTradeResult = "WON" | "LOST";
+export type AccumulatorTradeResult = "WON" | "LOST";
+export type AccumulatorSessionLimitType = "take_profit" | "stop_loss";
 
-export interface AccumulatorsRuntimeState {
+export interface AccumulatorSessionLimitReached {
+  type: AccumulatorSessionLimitType;
+  amount: number;
+  reason: string;
+}
+
+export interface AccumulatorChartPoint {
+  time: number;
+  price: number;
+  high: number | null;
+  low: number | null;
+}
+
+export interface AccumulatorRuntimeState {
   currentStake: number;
   martingaleStep: number;
   consecutiveLosses: number;
-  /** Stake efetivamente usada no contrato atual em aberto (ou null se nenhum). */
-  currentStakeInTrade: number | null;
-  /** ID do contrato ACCU atualmente em aberto. */
-  activeContractId: string | null;
-  /** Ticks decorridos desde a compra do contrato atual. */
-  ticksElapsed: number;
-  /** Valor atual do contrato (payout corrente), reportado pela Deriv a cada tick. */
-  currentContractValue: number | null;
-  /** Se o contrato ativo foi comprado manualmente (fora do loop do bot). */
-  isManualTrade: boolean;
-  lastStake: number | null;
-  lastResult: AccumulatorsTradeResult | null;
-  lastTradeAt: number | null;
-  lastProfit: number | null;
-  lastTicks: number | null;
   isProcessing: boolean;
+  activeContractId: string | null;
+  ticksElapsed: number;
+  ticksTarget: number;
+  currentValue: number | null;
+  currentProfit: number | null;
+  currentProfitPercent: number | null;
+  currentSpot: number | null;
+  currentHighBarrier: number | null;
+  currentLowBarrier: number | null;
+  lastContractId: string | null;
+  lastStake: number | null;
+  lastResult: AccumulatorTradeResult | null;
+  lastProfit: number | null;
+  lastTradeAt: number | null;
   entries: number;
   error: string | null;
+  isManualContract: boolean;
+  activeCloseMode: AccumulatorCloseMode | null;
+  activeProfitTarget: number | null;
+  closeReason: string | null;
+  lastWasKnockout: boolean;
+  profitMartingaleActive: boolean;
+  sessionLimitReached: AccumulatorSessionLimitReached | null;
+  chartPoints: AccumulatorChartPoint[];
+  filterBlocked: boolean;
+  filterReasons: string[];
+  filterWaitTicksRemaining: number;
+  filterSamples: number;
 }

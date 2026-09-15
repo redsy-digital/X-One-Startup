@@ -9,8 +9,3 @@ export { useSessionStore } from "./useSessionStore";
 export { useForexRiskStore } from "./useForexRiskStore";
 export { useDigitsStore } from "../digits/store";
 export type { DigitsContractType, DigitsConfig, DigitsRiskConfig, DigitsRuntimeState } from "../digits/types";
-
-export { useAccumulatorsStore } from "../accumulators/store";
-export type { AccumulatorsConfig, AccumulatorsRiskConfig, AccumulatorsRuntimeState, AccumulatorsGrowthRate } from "../accumulators/types";
-export { useSyntheticTabsStore } from "./useSyntheticTabsStore";
-export type { SyntheticTab, SyntheticTabType } from "./useSyntheticTabsStore";

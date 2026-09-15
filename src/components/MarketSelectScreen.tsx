@@ -52,7 +52,7 @@ export const MarketSelectScreen = () => {
       <div className="flex flex-col sm:flex-row gap-6 items-center">
         <MarketCard
           image="/images/synthetic_index.png"
-          label="Índices Sintéticos · Digits"
+          label="Índices Sintéticos"
           glowColor="rgba(124, 58, 237, 0.35)"
           onClick={() => setMarket("synthetic")}
           delay={0.1}

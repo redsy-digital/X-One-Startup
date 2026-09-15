@@ -18,9 +18,6 @@ import { TradingChart } from "../components/TradingChart";
 import { ErrorBoundary } from "../components/ErrorBoundary";
 import { MarketSelectScreen } from "../components/MarketSelectScreen";
 import { ForexDashboardPage } from "./ForexDashboardPage";
-import { AccumulatorsDashboardBody } from "./AccumulatorsDashboardPage";
-import { CreateSyntheticTabScreen } from "../components/CreateSyntheticTabScreen";
-import { SyntheticTabsBar } from "../components/SyntheticTabsBar";
 import { SYMBOLS } from "../constants";
 import { logger, LogEntry } from "../lib/logger";
 import { getTradeHistory } from "../lib/storage";
@@ -31,7 +28,9 @@ import {
 } from "../store";
 import { useSessionStore } from "../store/useSessionStore";
 import { useDigitsStore } from "../digits/store";
-import { useSyntheticTabsStore } from "../store/useSyntheticTabsStore";
+import { SyntheticOperationTabs, NoSyntheticTabs } from "../components/SyntheticOperationTabs";
+import { AccumulatorDashboard } from "../accumulators/Dashboard";
+import { useSyntheticTabsStore } from "../synthetic/tabs";
 import { DIGITS_CONTRACTS, digitsContractNeedsDigit, digitsContractLabel, type DigitsContractType, type DigitsTargetMode } from "../digits/types";
 
 // ── Timer de sessão ───────────────────────────────────────────────────────────
@@ -382,23 +381,20 @@ const ResultModal = ({ type, amount, onClose }: { type: "profit" | "loss"; amoun
   </div>
 );
 
-// ── DigitsDashboardBody ───────────────────────────────────────────────────
-// Dashboard de Digits, exatamente como sempre esteve — agora vive dentro de
-// uma aba de operação (ver SyntheticTabsBar / DashboardPage) em vez de ser
-// o único conteúdo possível para o mercado "synthetic". Nenhuma lógica de
-// Digits foi alterada por causa das abas.
-const DigitsDashboardBody = ({ tabId }: { tabId: string }) => {
-  const { isAuthorized } = useConnectionStore();
+// ── DashboardPage ─────────────────────────────────────────────────────────────
+export const DashboardPage = () => {
+  const navigate = useNavigate();
+  const { isAuthorized, activeAccount } = useConnectionStore();
   const { isBotRunning, setIsBotRunning, lossCooldown, sessionStartedAt, sessionFrozenElapsed } = useBotStore();
-  const { runningTabId, setRunningTab } = useSyntheticTabsStore();
-  const isOwner = runningTabId === tabId;
-  const { symbol, setSymbol, candles, ticks, timeframe, setTimeframe } = useMarketStore();
+  const { market, setMarket, symbol, setSymbol, candles, ticks, timeframe, setTimeframe } = useMarketStore();
+  const { tabs, activeTabId, runningTabId, setRunningTabId } = useSyntheticTabsStore();
+  const activeSyntheticTab = tabs.find(tab => tab.id === activeTabId) ?? null;
   const { settings } = useSettingsStore();
   const { runtime: digitsRuntime } = useDigitsStore();
   const { wins, losses, consecutiveLosses, pnl: rawPnl, modal, closeModal } = useSessionStore();
   const pnl = Number(rawPnl) || 0;
   const logEntries = useLogEntries(60);
-  const timer = useSessionTimer(isBotRunning && isOwner, sessionStartedAt, sessionFrozenElapsed);
+  const timer = useSessionTimer(isBotRunning, sessionStartedAt, sessionFrozenElapsed);
   const [showDigitsConfig, setShowDigitsConfig] = useState(false);
   const [nowTick, setNowTick] = useState(() => Date.now());
   useEffect(() => {
@@ -430,6 +426,19 @@ const DigitsDashboardBody = ({ tabId }: { tabId: string }) => {
     }
   }, [logEntries.length]);
 
+  // A aba activa controla apenas o painel/feed visual. O motor em execução usa runningTabId,
+  // permitindo trocar de aba sem transferir acidentalmente o contrato em execução para outro activo.
+  useEffect(() => {
+    if (market === "synthetic" && activeSyntheticTab && symbol !== activeSyntheticTab.symbol) {
+      setSymbol(activeSyntheticTab.symbol);
+    }
+  }, [market, activeSyntheticTab?.id, activeSyntheticTab?.symbol, symbol, setSymbol]);
+
+  // Redirecionar se sem Deriv
+  useEffect(() => {
+    if (!isAuthorized && !activeAccount) navigate("/");
+  }, [isAuthorized, activeAccount]);
+
   const currentPrice = ticks.length > 0 ? ticks[ticks.length - 1].price : null;
   const prevPrice = ticks.length > 1 ? ticks[ticks.length - 2].price : null;
   const isUp = currentPrice && prevPrice ? currentPrice >= prevPrice : true;
@@ -440,8 +449,33 @@ const DigitsDashboardBody = ({ tabId }: { tabId: string }) => {
     trade: "text-emerald-400", risk: "text-orange-400", error: "text-red-400"
   };
 
+  // Fase 1 do plano multi-mercado — ver forex_ux_architecture.md.
+  // Mercado ainda não escolhido nesta sessão: mostra o selector em vez do
+  // dashboard. Nenhum destes dois ramos toca no motor de trading nem no
+  // resto da página abaixo — o dashboard de sintéticos continua exactamente
+  // como sempre esteve quando market === "synthetic".
+  if (market === null) return <MarketSelectScreen />;
+  if (market === "forex") return <ForexDashboardPage />;
+  if (!activeSyntheticTab) return <NoSyntheticTabs />;
+  if (activeSyntheticTab.kind === "accumulators") return <AccumulatorDashboard tab={activeSyntheticTab} />;
+
   return (
     <>
+      {/* Fase 1 multi-mercado: trocar só permitido com o bot parado — mesma
+          regra já usada para alterar dados do mercado com o bot parado. */}
+      <div className="flex justify-end mb-2">
+        <button
+          onClick={() => !isBotRunning && setMarket(null)}
+          disabled={isBotRunning}
+          title={isBotRunning ? "Pára o bot para trocar de mercado" : "Trocar de mercado"}
+          className="text-[9px] font-black uppercase tracking-wide text-muted-foreground/60 hover:text-purple-400 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+        >
+          ⇄ Trocar mercado
+        </button>
+      </div>
+
+      <SyntheticOperationTabs />
+
       {/* Fix 1: Layout 2 colunas desktop — usa grid com larguras fixas */}
       <div className="grid grid-cols-1 lg:grid-cols-[300px_1fr] gap-4">
 
@@ -458,7 +492,7 @@ const DigitsDashboardBody = ({ tabId }: { tabId: string }) => {
                 <Clock3 className="w-4 h-4 text-purple-400" />
                 <p className="text-[9px] text-muted-foreground uppercase font-black tracking-widest">Sessão Digits</p>
               </div>
-              <Badge className={cn(isBotRunning && isOwner ? "bg-green-500/10 text-green-300 border-green-500/20" : "bg-white/5 text-muted-foreground border-white/10")}>{isBotRunning && isOwner ? "OPERANDO" : isBotRunning ? "NOUTRA ABA" : "PARADO"}</Badge>
+              <Badge className={cn(isBotRunning ? "bg-green-500/10 text-green-300 border-green-500/20" : "bg-white/5 text-muted-foreground border-white/10")}>{isBotRunning ? "OPERANDO" : "PARADO"}</Badge>
             </div>
             <div className="flex items-center justify-center">
               <div className="px-4 py-2 bg-black/50 border border-purple-500/30 rounded-xl">
@@ -583,17 +617,14 @@ const DigitsDashboardBody = ({ tabId }: { tabId: string }) => {
               className="h-14 border-purple-500/40 text-purple-400 hover:bg-purple-500/10 gap-2 font-black uppercase text-[11px]">
               <Settings2 className="w-4 h-4" /> Gestão
             </Button>
-            <button
-              onClick={() => {
-                if (isBotRunning && isOwner) { setIsBotRunning(false); setRunningTab(null); }
-                else if (!isBotRunning) { setRunningTab(tabId); setIsBotRunning(true); }
-              }}
-              disabled={!isAuthorized || (isBotRunning && !isOwner)}
-              title={isBotRunning && !isOwner ? "O bot já está a operar noutra aba" : undefined}
+            <button onClick={() => {
+              if (isBotRunning) { setIsBotRunning(false); setRunningTabId(null); }
+              else { setRunningTabId(activeSyntheticTab.id); setIsBotRunning(true); }
+            }} disabled={!isAuthorized || (isBotRunning && runningTabId !== activeSyntheticTab.id)}
               className={cn("h-14 rounded-xl border-2 font-black uppercase text-[11px] flex items-center justify-center gap-2 transition-all duration-300 disabled:opacity-40",
-                isBotRunning && isOwner ? "border-red-500/60 bg-red-500/10 text-red-400 shadow-lg shadow-red-500/20" : "border-green-500/40 bg-green-500/5 text-green-400 hover:bg-green-500/15")}>
-              <Power className={cn("w-5 h-5", isBotRunning && isOwner && "animate-pulse")} />
-              {isBotRunning && isOwner ? "Stop" : "Start"}
+                isBotRunning && runningTabId === activeSyntheticTab.id ? "border-red-500/60 bg-red-500/10 text-red-400 shadow-lg shadow-red-500/20" : "border-green-500/40 bg-green-500/5 text-green-400 hover:bg-green-500/15")}>
+              <Power className={cn("w-5 h-5", isBotRunning && "animate-pulse")} />
+              {isBotRunning && runningTabId === activeSyntheticTab.id ? "Stop" : "Start"}
             </button>
           </div>
 
@@ -729,58 +760,6 @@ const DigitsDashboardBody = ({ tabId }: { tabId: string }) => {
       <AnimatePresence>
         {showDigitsConfig && <DigitsConfigModal onClose={() => setShowDigitsConfig(false)} />}
       </AnimatePresence>
-    </>
-  );
-};
-
-// ── DashboardPage ─────────────────────────────────────────────────────────
-// Ponto de entrada de /dashboard. Decide entre o selector de mercado, o
-// Forex (inalterado) e, para Índices Sintéticos, a orquestração de abas de
-// operação (Digits / Accumulators) — nunca as duas no mesmo dashboard.
-export const DashboardPage = () => {
-  const navigate = useNavigate();
-  const { isAuthorized, activeAccount } = useConnectionStore();
-  const { isBotRunning } = useBotStore();
-  const { market, setMarket } = useMarketStore();
-  const { tabs, activeTabId } = useSyntheticTabsStore();
-
-  // Redirecionar se sem Deriv — igual ao comportamento anterior.
-  useEffect(() => {
-    if (!isAuthorized && !activeAccount) navigate("/");
-  }, [isAuthorized, activeAccount]);
-
-  // Fase 1 do plano multi-mercado — ver forex_ux_architecture.md.
-  // Mercado ainda não escolhido nesta sessão: mostra o selector em vez do
-  // dashboard. O Forex continua exatamente como sempre esteve.
-  if (market === null) return <MarketSelectScreen />;
-  if (market === "forex") return <ForexDashboardPage />;
-
-  const activeTab = tabs.find((t) => t.id === activeTabId) ?? null;
-
-  return (
-    <>
-      {/* Fase 1 multi-mercado: trocar só permitido com o bot parado — mesma
-          regra já usada para alterar dados do mercado com o bot parado. */}
-      <div className="flex justify-end mb-2">
-        <button
-          onClick={() => !isBotRunning && setMarket(null)}
-          disabled={isBotRunning}
-          title={isBotRunning ? "Pára o bot para trocar de mercado" : "Trocar de mercado"}
-          className="text-[9px] font-black uppercase tracking-wide text-muted-foreground/60 hover:text-purple-400 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
-        >
-          ⇄ Trocar mercado
-        </button>
-      </div>
-
-      {tabs.length === 0 ? (
-        <CreateSyntheticTabScreen />
-      ) : (
-        <>
-          <SyntheticTabsBar />
-          {activeTab?.type === "digits" && <DigitsDashboardBody tabId={activeTab.id} />}
-          {activeTab?.type === "accumulators" && <AccumulatorsDashboardBody tabId={activeTab.id} />}
-        </>
-      )}
     </>
   );
 };

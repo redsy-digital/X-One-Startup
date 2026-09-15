@@ -2,14 +2,10 @@ import { create } from "zustand";
 import { supabase } from "../lib/supabase";
 import type { StrategyProfile } from "../types";
 import type { DigitsContractType, DigitsTargetMode } from "../digits/types";
-import { isAccumulatorsGrowthRate, type AccumulatorsGrowthRate } from "../accumulators/types";
 import { logger } from "../lib/logger";
 
 export interface BotSettings {
-  // Gestão de banca partilhada pela operação de Índices Sintéticos — usada
-  // tanto por Digits como por Accumulators (só uma aba opera de cada vez,
-  // por isso partilham o mesmo perfil de risco em vez de terem cada uma o
-  // seu próprio, o que evitaria duplicar colunas na tabela bot_settings).
+  // Gestão de banca partilhada pela operação de Índices/Digits V1.
   stake: number;
   targetProfit: number;
   stopLoss: number;
@@ -22,9 +18,11 @@ export interface BotSettings {
 
   // Configurações antigas mantidas no schema por compatibilidade com dados já
   // existentes. Não são usadas pelo motor de Digits nem pelo runtime Forex.
+  minConfidence: number;
   strategyProfile: StrategyProfile;
   useSoros: boolean;
   maxSorosLevels: number;
+  contractDurationTicks: number;
 
   // Digits V1 — entrada fixa, sem indicadores/previsão.
   digitsContract: DigitsContractType;
@@ -35,16 +33,6 @@ export interface BotSettings {
   advancedMartingaleContract: DigitsContractType;
   advancedMartingaleTargetDigit: number;
   maxAdvancedMartingaleSteps: number;
-
-  // Accumulators V1 — sem tabela própria no Supabase. Reaproveita duas
-  // colunas de bot_settings que já existem no schema mas que nenhum motor
-  // actual lê/escreve: min_confidence (int 0-100, pertencia à antiga
-  // estratégia por score) guarda o Growth Rate como inteiro 1-5 (1%-5%);
-  // contract_duration_ticks (int 1-20, nunca usado por Digits, que tem
-  // duration fixa em 1 tick) guarda o número de ticks até o bot fechar o
-  // contrato Accumulators.
-  accumulatorsGrowthRate: AccumulatorsGrowthRate;
-  accumulatorsTickCount: number;
 }
 
 export const DEFAULT_SETTINGS: BotSettings = {
@@ -59,9 +47,11 @@ export const DEFAULT_SETTINGS: BotSettings = {
   cooldownAfterLoss: 30,
 
   // Compatibilidade apenas; o X-One V1 de Digits não usa estes campos.
+  minConfidence: 0,
   strategyProfile: "balanced",
   useSoros: false,
   maxSorosLevels: 0,
+  contractDurationTicks: 1,
 
   digitsContract: "DIGITUNDER",
   digitsTargetDigit: 9,
@@ -70,9 +60,6 @@ export const DEFAULT_SETTINGS: BotSettings = {
   advancedMartingaleContract: "DIGITOVER",
   advancedMartingaleTargetDigit: 2,
   maxAdvancedMartingaleSteps: 2,
-
-  accumulatorsGrowthRate: 0.01,
-  accumulatorsTickCount: 5,
 };
 
 const VALID_DIGITS_CONTRACTS: DigitsContractType[] = [
@@ -115,9 +102,6 @@ async function saveToSupabase(settings: BotSettings) {
       advanced_martingale_contract: settings.advancedMartingaleContract,
       advanced_martingale_target_digit: settings.advancedMartingaleTargetDigit,
       max_advanced_martingale_steps: settings.maxAdvancedMartingaleSteps,
-      // Accumulators V1 — colunas reaproveitadas, ver comentário na interface.
-      min_confidence: Math.round(settings.accumulatorsGrowthRate * 100),
-      contract_duration_ticks: settings.accumulatorsTickCount,
     }, { onConflict: "user_id" });
 
     if (!error) useSettingsStore.setState({ isDirty: false });
@@ -149,20 +133,6 @@ function normalizeDigit(value: unknown): number {
   return Number.isInteger(digit) && digit >= 0 && digit <= 9 ? digit : 9;
 }
 
-/** min_confidence guarda o Growth Rate como inteiro 1-5 (1%-5%). Qualquer
- * valor fora desse conjunto (incluindo o 0 antigo, de quando a coluna ainda
- * não tinha uso) cai no default de 1%. */
-function normalizeGrowthRate(value: unknown): AccumulatorsGrowthRate {
-  const rate = Number(value) / 100;
-  return isAccumulatorsGrowthRate(rate) ? rate : DEFAULT_SETTINGS.accumulatorsGrowthRate;
-}
-
-/** contract_duration_ticks tem CHECK (1-20) na base de dados. */
-function normalizeTickCount(value: unknown): number {
-  const n = Math.round(Number(value));
-  return Number.isFinite(n) && n >= 1 && n <= 20 ? n : DEFAULT_SETTINGS.accumulatorsTickCount;
-}
-
 export const useSettingsStore = create<SettingsState>((set, get) => ({
   settings: DEFAULT_SETTINGS,
   isLoaded: false,
@@ -189,6 +159,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
           targetProfit: numberOr(data.target_profit, DEFAULT_SETTINGS.targetProfit),
           stopLoss: numberOr(data.stop_loss, DEFAULT_SETTINGS.stopLoss),
           cooldownSeconds: numberOr(data.cooldown_seconds, 0),
+          minConfidence: numberOr(data.min_confidence, 0),
           strategyProfile: (data.strategy_profile as StrategyProfile) ?? "balanced",
           useMartingale: Boolean(data.use_martingale),
           martingaleMultiplier: numberOr(data.martingale_multiplier, DEFAULT_SETTINGS.martingaleMultiplier),
@@ -197,6 +168,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
           maxSorosLevels: numberOr(data.max_soros_levels, 0),
           maxConsecutiveLosses: numberOr(data.max_consecutive_losses, DEFAULT_SETTINGS.maxConsecutiveLosses),
           cooldownAfterLoss: numberOr(data.cooldown_after_loss, DEFAULT_SETTINGS.cooldownAfterLoss),
+          contractDurationTicks: 1,
           digitsContract: normalizeDigitsContract(data.digits_contract),
           digitsTargetDigit: Boolean(data.digits_follow_up)
             ? "follow_up"
@@ -207,8 +179,6 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
           advancedMartingaleContract: normalizeDigitsContract(data.advanced_martingale_contract),
           advancedMartingaleTargetDigit: normalizeDigit(data.advanced_martingale_target_digit),
           maxAdvancedMartingaleSteps: numberOr(data.max_advanced_martingale_steps, DEFAULT_SETTINGS.maxAdvancedMartingaleSteps),
-          accumulatorsGrowthRate: normalizeGrowthRate(data.min_confidence),
-          accumulatorsTickCount: normalizeTickCount(data.contract_duration_ticks),
         },
       });
       logger.system("Settings carregadas do Supabase");

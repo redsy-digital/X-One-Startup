@@ -1,57 +1,45 @@
 import { useEffect } from "react";
 import { useConnectionStore, useBotStore, useMarketStore, useSettingsStore } from "../store";
 import { useDigitsEngine } from "../digits/useDigitsEngine";
-import { useAccumulatorsEngine } from "../accumulators/useAccumulatorsEngine";
-import { useSyntheticTabsStore } from "../store/useSyntheticTabsStore";
+import { useAccumulatorEngine } from "../accumulators/useAccumulatorEngine";
 import { forexRuntimeIntegrationV1 } from "../forex/runtime";
+import { useSyntheticTabsStore } from "../synthetic/tabs";
+import { DEFAULT_ACCUMULATOR_FILTERS } from "../accumulators/filters";
 
 /**
- * TradingEngineRunner — componente sem UI.
- *
- * Índices Sintéticos agora suporta duas abas de operação independentes —
- * Digits e Accumulators (ver useSyntheticTabsStore) — mas apenas uma pode
- * estar "isBotRunning" de cada vez: runningTabId identifica qual delas é a
- * dona da execução actual, e cada motor só é activado quando a aba
- * correspondente é a dona. O runtime Forex continua totalmente separado e
- * intocado.
+ * Runtime coordinator. Forex remains isolated. Synthetic operation tabs share
+ * only the connection and the single global active-bot lock; each engine is
+ * activated exclusively from runningTabId.
  */
 export const TradingEngineRunner = () => {
   const { isAuthorized, balance } = useConnectionStore();
-  const { isBotRunning, setLossCooldown } = useBotStore();
-  const { symbol, market } = useMarketStore();
+  const { isBotRunning } = useBotStore();
+  const { market, symbol } = useMarketStore();
   const { settings } = useSettingsStore();
-  const { tabs, runningTabId, setRunningTab } = useSyntheticTabsStore();
-  const runningTabType = tabs.find((t) => t.id === runningTabId)?.type ?? null;
+  const { tabs, runningTabId, setRunningTabId } = useSyntheticTabsStore();
+  const runningTab = tabs.find(tab => tab.id === runningTabId) ?? null;
 
-  // Rede de segurança: sempre que o bot global pára (por qualquer motivo —
-  // Stop manual, Take Profit/Stop Loss, perdas seguidas), liberta a aba
-  // "dona" para que o Start volte a ficar disponível nas outras abas.
   useEffect(() => {
-    if (!isBotRunning && runningTabId) setRunningTab(null);
-  }, [isBotRunning]);
+    if (!isBotRunning && runningTabId) setRunningTabId(null);
+  }, [isBotRunning, runningTabId, setRunningTabId]);
 
-  // O Forex continua a gerir o seu próprio risco através do Forex Runtime;
-  // o motor direccional legado deixou de ser montado.
-
-  // ── Forex: fluxo existente, isolado ──────────────────────────────────────
   useEffect(() => {
-    if (market === "forex" && isBotRunning && isAuthorized) {
-      forexRuntimeIntegrationV1.start();
-    } else if (market === "forex") {
-      forexRuntimeIntegrationV1.stop();
-    }
-    return () => {
-      if (market === "forex") forexRuntimeIntegrationV1.stop();
-    };
+    if (market === "forex" && isBotRunning && isAuthorized) forexRuntimeIntegrationV1.start();
+    else if (market === "forex") forexRuntimeIntegrationV1.stop();
+    return () => { if (market === "forex") forexRuntimeIntegrationV1.stop(); };
   }, [market, isBotRunning, isAuthorized]);
 
-  // ── Synthetic → Digits V1 ────────────────────────────────────────────────
+  const digitsRunning = isBotRunning && market === "synthetic" && runningTab?.kind === "digits";
+  const accumRunning = isBotRunning && market === "synthetic" && runningTab?.kind === "accumulators";
+  const syntheticSymbol = runningTab?.symbol ?? symbol;
+  const accumulator = runningTab?.accumulator;
+
   useDigitsEngine({
     contract: settings.digitsContract,
     targetDigit: settings.digitsTargetDigit,
-    symbol,
+    symbol: syntheticSymbol,
     isAuthorized,
-    isBotRunning: isBotRunning && market === "synthetic" && runningTabType === "digits",
+    isBotRunning: digitsRunning,
     balance,
     stake: settings.stake,
     targetProfit: settings.targetProfit,
@@ -67,25 +55,27 @@ export const TradingEngineRunner = () => {
     cooldownAfterLoss: settings.cooldownAfterLoss,
   });
 
-  // ── Synthetic → Accumulators V1 ──────────────────────────────────────────
-  // Perfil de risco partilhado com Digits (settings do useSettingsStore) —
-  // growthRate/tickCount vêm das duas colunas reaproveitadas em bot_settings
-  // (ver comentário em useSettingsStore.ts).
-  useAccumulatorsEngine({
-    growthRate: settings.accumulatorsGrowthRate,
-    tickCount: settings.accumulatorsTickCount,
-    symbol,
+  useAccumulatorEngine({
+    symbol: accumulator?.symbol ?? syntheticSymbol,
+    durationTicks: accumulator?.durationTicks ?? 20,
+    stake: accumulator?.stake ?? 1,
+    targetProfit: accumulator?.targetProfit ?? 3.5,
+    stopLoss: accumulator?.stopLoss ?? 6,
+    useMartingale: accumulator?.useMartingale ?? true,
+    martingaleMultiplier: accumulator?.martingaleMultiplier ?? 2.1,
+    maxMartingaleSteps: accumulator?.maxMartingaleSteps ?? 3,
+    maxConsecutiveLosses: accumulator?.maxConsecutiveLosses ?? 5,
+    cooldownAfterLoss: accumulator?.cooldownAfterLoss ?? 30,
+    growthRate: accumulator?.growthRate ?? 0.01,
+    closeMode: accumulator?.closeMode ?? "ticks",
+    profitPercentTarget: accumulator?.profitPercentTarget ?? 25,
+    contractTakeProfit: accumulator?.contractTakeProfit ?? 0.5,
+    useProfitMartingale: accumulator?.useProfitMartingale ?? false,
+    profitMartingaleTarget: accumulator?.profitMartingaleTarget ?? 0.5,
+    filters: { ...DEFAULT_ACCUMULATOR_FILTERS, ...(accumulator?.filters ?? {}) },
     isAuthorized,
-    isBotRunning: isBotRunning && market === "synthetic" && runningTabType === "accumulators",
+    isBotRunning: accumRunning,
     balance,
-    stake: settings.stake,
-    targetProfit: settings.targetProfit,
-    stopLoss: settings.stopLoss,
-    useMartingale: settings.useMartingale,
-    martingaleMultiplier: settings.martingaleMultiplier,
-    maxMartingaleSteps: settings.maxMartingaleSteps,
-    maxConsecutiveLosses: settings.maxConsecutiveLosses,
-    cooldownAfterLoss: settings.cooldownAfterLoss,
   });
 
   return null;

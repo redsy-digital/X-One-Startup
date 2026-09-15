@@ -69,6 +69,7 @@ export class DerivService {
   private readonly MAX_RECONNECT = 5;
   private requestSeq = 1000;
   private pendingRequests = new Map<number, { resolve: (data: any) => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> }>();
+  private accumulatorSymbolCache: { expiresAt: number; symbols: any[] } | null = null;
 
   // Heartbeat / connection health (New API). Deriv recommends a ping every
   // 30–60s to keep WebSocket connections alive through proxies/firewalls.
@@ -385,6 +386,23 @@ export class DerivService {
     });
   }
 
+  /** One-shot raw tick history used by lightweight Accumulator analytics. */
+  async getRawTicksHistory(symbol: string, count: number, end: number | "latest" = "latest"): Promise<{ times: number[]; prices: number[] }> {
+    if (!symbol) throw new Error("Símbolo ausente para histórico de ticks.");
+    const data = await this.request<any>({
+      ticks_history: symbol,
+      end,
+      count: Math.max(1, Math.min(5000, Math.floor(count))),
+      style: "ticks",
+      adjust_start_time: 1,
+    }, "history", 15000);
+    if (data.error) throw new Error(data.error.message || "Erro em ticks_history");
+    const times = Array.isArray(data.history?.times) ? data.history.times.map(Number).filter(Number.isFinite) : [];
+    const prices = Array.isArray(data.history?.prices) ? data.history.prices.map(Number).filter(Number.isFinite) : [];
+    if (!prices.length) throw new Error("A Deriv não devolveu ticks históricos para este ativo.");
+    return { times, prices };
+  }
+
   /**
    * Digits V1 proposal. One fixed 1-tick contract is requested and the
    * configured digit is sent as the barrier for the contracts that need it.
@@ -422,70 +440,6 @@ export class DerivService {
   }
 
   /**
-   * Accumulators (ACCU) V1 proposal. ACCU contracts have no fixed
-   * duration/duration_unit — the range is open-ended and only ends when the
-   * spot breaches the accumulator range, the user sells early, or an
-   * optional take_profit limit_order is hit. growthRate must be one of the
-   * five rates Deriv supports for ACCU: 0.01, 0.02, 0.03, 0.04, 0.05.
-   * See https://developers.deriv.com/docs/accumulator-options
-   */
-  async getAccumulatorsProposal(
-    symbol: string,
-    amount: number,
-    growthRate: number,
-    takeProfit?: number,
-  ) {
-    if (!symbol) throw new Error("Símbolo Accumulators ausente.");
-    if (!Number.isFinite(amount) || amount <= 0) throw new Error("Stake Accumulators inválida.");
-    const validRates = [0.01, 0.02, 0.03, 0.04, 0.05];
-    if (!validRates.includes(growthRate)) {
-      throw new Error("Growth Rate inválido. Deve ser um de: 1%, 2%, 3%, 4%, 5%.");
-    }
-
-    const data = await this.request<any>({
-      proposal: 1,
-      amount,
-      basis: "stake",
-      contract_type: "ACCU",
-      currency: this.accountCurrency,
-      // Esta conta usa a versão da New API em que "symbol" foi renomeado
-      // para "underlying_symbol" (o mesmo campo já usado por
-      // getDigitsProposal/probeProposal acima) — usar "symbol" aqui causa
-      // "Input validation failed: Properties not allowed: symbol.".
-      underlying_symbol: symbol,
-      growth_rate: growthRate,
-      ...(takeProfit && takeProfit > 0 ? { limit_order: { take_profit: takeProfit } } : {}),
-    }, "proposal", 15000);
-
-    if (data.error) throw new Error(data.error.message || "Erro em proposal Accumulators");
-    if (!data.proposal?.id) throw new Error("Proposal Accumulators sem ID.");
-    return data.proposal;
-  }
-
-  /**
-   * Fecha um contrato antes da expiração (ou, no caso dos Accumulators, que
-   * não têm expiração fixa, a qualquer momento). price=0 vende ao preço de
-   * mercado ("sell at market"), tal como documentado pela Deriv.
-   */
-  async sellContract(contractId: string, price = 0) {
-    if (!contractId) throw new Error("Contract ID ausente para sell.");
-    const data = await this.request<any>({
-      sell: contractId,
-      price,
-    }, "sell", 15000);
-    if (data.error) throw new Error(data.error.message || "Erro em sell");
-    const sell = data.sell;
-    if (!sell) throw new Error("Resposta de sell vazia.");
-    return {
-      contractId: String(sell.contract_id ?? contractId),
-      soldFor: toFiniteNumber(sell.sold_for),
-      balanceAfter: toFiniteNumber(sell.balance_after),
-      transactionId: sell.transaction_id != null ? String(sell.transaction_id) : undefined,
-      raw: data,
-    };
-  }
-
-  /**
    * New API authenticated buy. D17 uses this Promise-based gateway so the
    * executor only reports success after Deriv returns a valid buy response
    * containing a contract_id. No loginid is sent (New API).
@@ -513,6 +467,142 @@ export class DerivService {
       balanceAfter: toFiniteNumber(buy.balance_after),
       raw: data,
     };
+  }
+
+  /**
+   * Resolve the real New API symbol from the Deriv active-symbol catalogue.
+   *
+   * This is important for newly introduced Crash/Boom indices: the display
+   * name shown by DTrader is not a safe source of the underlying identifier.
+   * X-One therefore keeps the user's selected value for the UI, but resolves
+   * the current API identifier immediately before requesting an ACCU proposal.
+   */
+  private async resolveAccumulatorSymbol(symbol: string): Promise<string> {
+    if (!symbol) throw new Error("Ativo ACCU ausente.");
+
+    const requested = String(symbol).trim();
+    const aliases: Record<string, string> = {
+      BOOM50: "Boom 50 Index",
+      BOOM99: "Boom 99 Index",
+      BOOM100: "Boom 100 Index",
+      BOOM150: "Boom 150 Index",
+      BOOM200: "Boom 200 Index",
+      BOOM300: "Boom 300 Index",
+      BOOM500: "Boom 500 Index",
+      BOOM600: "Boom 600 Index",
+      BOOM900: "Boom 900 Index",
+      BOOM1000: "Boom 1000 Index",
+      CRASH50: "Crash 50 Index",
+      CRASH99: "Crash 99 Index",
+      CRASH100: "Crash 100 Index",
+      CRASH150: "Crash 150 Index",
+      CRASH200: "Crash 200 Index",
+      CRASH300: "Crash 300 Index",
+      CRASH500: "Crash 500 Index",
+      CRASH600: "Crash 600 Index",
+      CRASH900: "Crash 900 Index",
+      CRASH1000: "Crash 1000 Index",
+    };
+
+    const normalized = (value: unknown) =>
+      String(value ?? "").trim().toLowerCase().replace(/\s+/g, " ");
+    const requestedName = aliases[requested];
+
+    // IMPORTANT: ask Deriv specifically for symbols that support ACCU.
+    // Looking at the generic active-symbol list is not enough: an asset can
+    // exist as a CFD/market symbol while ACCU is not offered for that symbol.
+    // This was the source of the false assumption that the hard-coded symbol
+    // was always a valid ACCU underlying.
+    try {
+      const accuSymbols = await this.getActiveSymbols(["ACCU"]);
+      const resolved = accuSymbols.find((item: any) => {
+        const id = String(item?.underlying_symbol ?? "").trim();
+        const name = normalized(item?.underlying_symbol_name);
+        return id === requested || (!!requestedName && name === normalized(requestedName));
+      });
+
+      if (resolved?.underlying_symbol) {
+        const liveId = String(resolved.underlying_symbol);
+        if (liveId !== requested) {
+          logger.system(`[Deriv] ACCU symbol resolved | ${requested} → ${liveId}`);
+        }
+        return liveId;
+      }
+
+      // Fallback/verification: contracts_for is the authoritative per-symbol
+      // capability check. If it reports ACCU, always use the identifier
+      // returned by Deriv instead of a UI constant.
+      const contracts = await this.getContractsFor(requested);
+      const available = Array.isArray(contracts?.available) ? contracts.available : [];
+      const accu = available.find((item: any) => String(item?.contract_type ?? "").toUpperCase() === "ACCU");
+      if (accu?.underlying_symbol) {
+        const liveId = String(accu.underlying_symbol);
+        logger.system(`[Deriv] ACCU capability confirmed | ${requested} → ${liveId}`);
+        return liveId;
+      }
+
+      throw new Error(`ACCU não está disponível para ${requestedName || requested} nesta sessão/API da Deriv.`);
+    } catch (error: any) {
+      const message = error?.message || String(error);
+      // Preserve useful Deriv errors. Do not silently fall back to a symbol
+      // that we already know may not support ACCU; that only recreates the
+      // generic "Trading is not offered for this asset" failure.
+      if (message.includes("ACCU não está disponível")) throw error;
+      throw new Error(`Não foi possível validar ACCU para ${requestedName || requested}: ${message}`);
+    }
+  }
+
+  /** New API: proposal for Accumulator Options (ACCU).
+   *
+   * ACCU has no contract expiry. `durationTicks` is an X-One exit rule only;
+   * it must never be sent as duration/date_expiry to the ACCU proposal.
+   */
+  async getAccumulatorProposal(symbol: string, amount: number, growthRate = 0.01, limitOrder?: { take_profit?: number; stop_loss?: number }) {
+    if (!symbol) throw new Error("Ativo ACCU ausente.");
+    if (!Number.isFinite(amount) || amount <= 0) throw new Error("Stake ACCU inválida.");
+    if (![0.01, 0.02, 0.03, 0.04, 0.05].includes(growthRate)) {
+      throw new Error("Growth rate ACCU inválido.");
+    }
+
+    const resolvedSymbol = await this.resolveAccumulatorSymbol(symbol);
+    const data = await this.request<any>({
+      proposal: 1,
+      amount,
+      basis: "stake",
+      contract_type: "ACCU",
+      currency: this.accountCurrency,
+      underlying_symbol: resolvedSymbol,
+      growth_rate: growthRate,
+      ...(limitOrder && (limitOrder.take_profit !== undefined || limitOrder.stop_loss !== undefined)
+        ? { limit_order: limitOrder }
+        : {}),
+    }, "proposal", 15000);
+    if (data.error) throw new Error(data.error.message || "Erro em proposal ACCU");
+    if (!data.proposal?.id) throw new Error("Proposal ACCU sem ID.");
+    return data.proposal;
+  }
+
+  /** New API: sells an active contract at market price (price=0). */
+  async sellContract(contractId: string) {
+    if (!contractId) throw new Error("ID do contrato ausente para sell.");
+    const data = await this.request<any>({ sell: contractId, price: 0 }, "sell", 15000);
+    if (data.error) throw new Error(data.error.message || "Erro ao fechar contrato.");
+    const sell = data.sell;
+    if (!sell?.contract_id) throw new Error("Resposta de sell sem contract_id.");
+    return {
+      contractId: String(sell.contract_id),
+      soldFor: toFiniteNumber(sell.sold_for),
+      balanceAfter: toFiniteNumber(sell.balance_after),
+      transactionId: sell.transaction_id != null ? String(sell.transaction_id) : undefined,
+      raw: data,
+    };
+  }
+
+  /** New API: current open contracts, used by the Accumulator manual close button. */
+  async getPortfolio() {
+    const data = await this.request<any>({ portfolio: 1 }, "portfolio", 15000);
+    if (data.error) throw new Error(data.error.message || "Erro em portfolio");
+    return Array.isArray(data.portfolio?.contracts) ? data.portfolio.contracts : [];
   }
 
   /** Legacy fire-and-forget helper retained for existing UI code. D17 does not use it. */
