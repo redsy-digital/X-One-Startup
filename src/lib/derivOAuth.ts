@@ -7,7 +7,7 @@ export interface DerivAccount {
 
 const DERIV_AUTH_BASE = "https://auth.deriv.com/oauth2";
 const DERIV_CLIENT_ID = "33gBi3mWY8Bd6sVsDRLrO";
-const DERIV_REDIRECT_URI = "https://x-one-new.vercel.app/oauth/callback";
+const DERIV_REDIRECT_URI = "https://x-one-startup.vercel.app/oauth/callback";
 const DERIV_SCOPE = "trade";
 
 const randomBase64Url = (bytes: Uint8Array): string => {
