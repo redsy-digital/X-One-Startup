@@ -14,6 +14,9 @@ import { Candle } from "../types";
 interface TradingChartProps {
   candles: Candle[];
   symbol: string;
+  chartType?: "candles" | "line";
+  showIndicators?: boolean;
+  showSymbolLabel?: boolean;
 }
 
 // ── EMA array (todos os valores, não apenas o último) ─────────────────────────
@@ -30,15 +33,17 @@ function emaArray(closes: number[], period: number): (number | null)[] {
   return result;
 }
 
-const TradingChartInner = ({ candles, symbol }: TradingChartProps) => {
+const TradingChartInner = ({ candles, symbol, chartType = "candles", showIndicators = true, showSymbolLabel = true }: TradingChartProps) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const candleSeriesRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
+  const lineSeriesRef = useRef<ISeriesApi<"Line"> | null>(null);
   const emaFastRef = useRef<ISeriesApi<"Line"> | null>(null);
   const emaSlowRef = useRef<ISeriesApi<"Line"> | null>(null);
   const prevLengthRef = useRef(0);
   const prevFirstTimeRef = useRef<number | null>(null);
   const prevLastTimeRef = useRef<number | null>(null);
+  const prevIntervalRef = useRef<number | null>(null);
 
   // ── Criar chart na montagem ───────────────────────────────────────────────
   useEffect(() => {
@@ -91,6 +96,16 @@ const TradingChartInner = ({ candles, symbol }: TradingChartProps) => {
       wickDownColor: "#f87171",
     });
 
+    const lineSeries = chart.addLineSeries({
+      color: "#22c55e",
+      lineWidth: 2,
+      priceLineVisible: false,
+      lastValueVisible: true,
+      visible: chartType === "line",
+    });
+
+    candleSeries.applyOptions({ visible: chartType === "candles" });
+
     // EMA 9 (azul)
     const emaFast = chart.addLineSeries({
       color: "#3b82f6",
@@ -111,6 +126,7 @@ const TradingChartInner = ({ candles, symbol }: TradingChartProps) => {
 
     chartRef.current = chart;
     candleSeriesRef.current = candleSeries;
+    lineSeriesRef.current = lineSeries;
     emaFastRef.current = emaFast;
     emaSlowRef.current = emaSlow;
 
@@ -127,10 +143,11 @@ const TradingChartInner = ({ candles, symbol }: TradingChartProps) => {
       chart.remove();
       chartRef.current = null;
       candleSeriesRef.current = null;
+      lineSeriesRef.current = null;
       emaFastRef.current = null;
       emaSlowRef.current = null;
     };
-  }, []);
+  }, [chartType]);
 
   // ── Actualizar dados dos candles ──────────────────────────────────────────
   useEffect(() => {
@@ -139,7 +156,9 @@ const TradingChartInner = ({ candles, symbol }: TradingChartProps) => {
       prevLengthRef.current = 0;
       prevFirstTimeRef.current = null;
       prevLastTimeRef.current = null;
+      prevIntervalRef.current = null;
       candleSeriesRef.current.setData([]);
+      lineSeriesRef.current?.setData([]);
       emaFastRef.current?.setData([]);
       emaSlowRef.current?.setData([]);
       return;
@@ -147,11 +166,15 @@ const TradingChartInner = ({ candles, symbol }: TradingChartProps) => {
 
     const firstTime = candles[0]?.time ?? null;
     const lastTime = candles[candles.length - 1]?.time ?? null;
+    const currentInterval = candles.length >= 2 ? candles[1].time - candles[0].time : null;
     const timeframeChanged =
-      prevFirstTimeRef.current !== null &&
-      firstTime !== null &&
-      prevFirstTimeRef.current !== firstTime;
-    const datasetReset = timeframeChanged || candles.length < prevLengthRef.current;
+      prevIntervalRef.current !== null &&
+      currentInterval !== null &&
+      prevIntervalRef.current !== currentInterval;
+    const datasetReset =
+      timeframeChanged ||
+      (prevFirstTimeRef.current !== null && firstTime !== null && prevFirstTimeRef.current !== firstTime) ||
+      candles.length < prevLengthRef.current;
     const isInitial = prevLengthRef.current === 0;
 
     if (datasetReset || isInitial) {
@@ -176,13 +199,24 @@ const TradingChartInner = ({ candles, symbol }: TradingChartProps) => {
       });
     }
 
+    lineSeriesRef.current?.setData(candles.map((c) => ({
+      time: c.time as UTCTimestamp,
+      value: c.close,
+    })));
+
     prevLengthRef.current = candles.length;
     prevFirstTimeRef.current = firstTime;
     prevLastTimeRef.current = lastTime;
+    prevIntervalRef.current = currentInterval;
   }, [candles]);
 
   // ── Actualizar EMAs ───────────────────────────────────────────────────────
   useEffect(() => {
+    if (!showIndicators || chartType !== "candles") {
+      emaFastRef.current?.setData([]);
+      emaSlowRef.current?.setData([]);
+      return;
+    }
     if (!emaFastRef.current || !emaSlowRef.current || candles.length < 21) return;
 
     const closes = candles.map((c) => c.close);
@@ -199,22 +233,15 @@ const TradingChartInner = ({ candles, symbol }: TradingChartProps) => {
 
     emaFastRef.current.setData(fastData);
     emaSlowRef.current.setData(slowData);
-  }, [candles]);
+  }, [candles, chartType, showIndicators]);
 
   return (
     <div className="relative">
-      {/* Legenda das EMAs */}
-      <div className="absolute top-2 left-2 z-10 flex items-center gap-3 pointer-events-none">
-        <div className="flex items-center gap-1">
-          <div className="w-4 h-0.5 bg-blue-500" />
-          <span className="text-[9px] text-blue-400 font-bold font-mono">EMA 9</span>
+      {showSymbolLabel && (
+        <div className="absolute top-2 left-2 z-10 pointer-events-none">
+          <span className="text-[9px] text-muted-foreground font-mono">{symbol}</span>
         </div>
-        <div className="flex items-center gap-1">
-          <div className="w-4 h-0.5 bg-purple-500" />
-          <span className="text-[9px] text-purple-400 font-bold font-mono">EMA 21</span>
-        </div>
-        <span className="text-[9px] text-muted-foreground font-mono">{symbol}</span>
-      </div>
+      )}
 
       {/* Container do chart */}
       <div ref={containerRef} className="w-full" />

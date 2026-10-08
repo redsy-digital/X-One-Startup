@@ -20,6 +20,7 @@ const DEFAULT_CLOSE_MODE: AccumulatorCloseMode = "ticks";
 export interface AccumulatorEngineConfig extends AccumulatorConfig {
   isAuthorized: boolean;
   isBotRunning: boolean;
+  isBotPaused: boolean;
   balance: number | null;
   onForceStop: (reason: string) => void;
 }
@@ -45,6 +46,7 @@ export class AccumulatorEngineV1 {
   private tickBuffer: number[] = [];
   private filterWaitTicks = 0;
   private filterHistoryLoading = false;
+  private stableRecoveryTicks = 0;
   private readonly unsubs: Array<() => void> = [];
 
   constructor(config: AccumulatorEngineConfig) {
@@ -55,20 +57,29 @@ export class AccumulatorEngineV1 {
 
   updateConfig(config: AccumulatorEngineConfig) {
     const previousSymbol = this.config.symbol;
+    const previousPaused = this.config.isBotPaused;
     this.config = this.normalizeConfig(config);
     if (previousSymbol !== this.config.symbol) {
       this.tickBuffer = [];
       this.filterWaitTicks = 0;
-      this.setRuntime({ filterBlocked: false, filterReasons: [], filterWaitTicksRemaining: 0, filterSamples: 0 });
+      this.stableRecoveryTicks = 0;
+      this.setRuntime({ filterBlocked: false, filterReasons: [], filterWaitTicksRemaining: 0, filterSamples: 0, entryScore: 100, marketRegime: "stable", recoveryTicks: 0, volatilityAcceleration: null });
     }
     this.checkSessionLimits();
-    if (this.config.isBotRunning && this.config.isAuthorized && !this.activeContractId && !this.entryInFlight) {
+    if (previousPaused && !this.config.isBotPaused) {
+      if (this.config.useMartingale && this.risk.martingaleStep > 0) this.risk = { ...this.risk, currentStake: Math.round(this.config.stake * Math.pow(this.config.martingaleMultiplier, this.risk.martingaleStep) * 100) / 100 };
+      else this.risk = { ...this.risk, currentStake: this.config.stake };
+      this.setRuntime({ currentStake: this.risk.currentStake, martingaleStep: this.risk.martingaleStep });
+      logger.system("Accumulators: operação retomada.");
+    }
+    if (previousPaused !== this.config.isBotPaused && this.config.isBotPaused) logger.system("Accumulators: operação pausada — novas entradas bloqueadas.");
+    if (this.config.isBotRunning && !this.config.isBotPaused && this.config.isAuthorized && !this.activeContractId && !this.entryInFlight) {
       void this.enter();
     }
   }
 
   start() {
-    if (this.destroyed || !this.config.isAuthorized || !this.config.isBotRunning || this.activeContractId || this.entryInFlight) return;
+    if (this.destroyed || !this.config.isAuthorized || !this.config.isBotRunning || this.config.isBotPaused || this.activeContractId || this.entryInFlight) return;
     if (this.config.balance === null) return this.fail("Saldo Deriv ainda não disponível.");
 
     if (!this.activeContractId) {
@@ -78,7 +89,8 @@ export class AccumulatorEngineV1 {
       this.profitMartingaleActive = false;
       this.lastWasKnockout = false;
       useAccumulatorStore.getState().resetRuntime(this.risk.currentStake, this.config.durationTicks);
-      this.setRuntime({ filterBlocked: false, filterReasons: [], filterWaitTicksRemaining: 0, filterSamples: this.tickBuffer.length });
+      this.stableRecoveryTicks = 0;
+      this.setRuntime({ filterBlocked: false, filterReasons: [], filterWaitTicksRemaining: 0, filterSamples: this.tickBuffer.length, entryScore: 100, marketRegime: "stable", recoveryTicks: 0, volatilityAcceleration: null });
       useSessionStore.getState().resetSession();
       void this.prepareFilterBuffer();
       logger.system(`Accumulators V1 iniciado | ${this.config.symbol} | ${this.closeModeLabel()} | stake $${this.risk.currentStake.toFixed(2)}`);
@@ -170,23 +182,28 @@ export class AccumulatorEngineV1 {
     const symbol = String(tick.symbol ?? "");
     const quote = Number(tick.quote);
     if (symbol !== this.config.symbol || !Number.isFinite(quote)) return;
-    this.tickBuffer = [...this.tickBuffer, quote].slice(-160);
+    this.tickBuffer = [...this.tickBuffer, quote].slice(-200);
     if (!this.filtersActive()) return;
 
     const evaluation = evaluateAccumulatorEntry(this.tickBuffer, this.config.filters);
+    if (evaluation.marketRegime === "stable" && evaluation.recoveryConfirmed) this.stableRecoveryTicks = Math.min(3, this.stableRecoveryTicks + 1);
+    else this.stableRecoveryTicks = 0;
+
     this.setRuntime({
       filterBlocked: !evaluation.allowed,
       filterReasons: evaluation.reasons,
       filterSamples: evaluation.samples,
       filterWaitTicksRemaining: this.filterWaitTicks,
+      entryScore: evaluation.entryScore,
+      marketRegime: evaluation.marketRegime,
+      recoveryTicks: this.stableRecoveryTicks,
+      volatilityAcceleration: evaluation.volatilityAcceleration,
     });
 
     if (this.filterWaitTicks > 0) {
       this.filterWaitTicks -= 1;
       this.setRuntime({ filterWaitTicksRemaining: this.filterWaitTicks });
-      if (this.filterWaitTicks === 0 && this.config.isBotRunning && !this.activeContractId && !this.entryInFlight && !this.filterHistoryLoading) {
-        void this.enter();
-      }
+      if (this.filterWaitTicks === 0 && this.config.isBotRunning && !this.config.isBotPaused && !this.activeContractId && !this.entryInFlight && !this.filterHistoryLoading) void this.enter();
     }
   }
 
@@ -196,29 +213,35 @@ export class AccumulatorEngineV1 {
 
   private canEnterWithFilters() {
     if (!this.filtersActive()) {
-      this.filterWaitTicks = 0;
-      this.setRuntime({ filterBlocked: false, filterReasons: [], filterWaitTicksRemaining: 0, filterSamples: this.tickBuffer.length });
+      this.filterWaitTicks = 0; this.stableRecoveryTicks = 0;
+      this.setRuntime({ filterBlocked: false, filterReasons: [], filterWaitTicksRemaining: 0, filterSamples: this.tickBuffer.length, entryScore: 100, marketRegime: "stable", recoveryTicks: 0, volatilityAcceleration: null });
       return true;
     }
     if (this.filterHistoryLoading) {
-      this.setRuntime({ filterBlocked: true, filterReasons: ["Aguardando histórico de ticks"], filterSamples: this.tickBuffer.length });
+      this.setRuntime({ filterBlocked: true, filterReasons: ["Aguardando histórico de ticks"], filterSamples: this.tickBuffer.length, entryScore: 0, marketRegime: "transition", recoveryTicks: this.stableRecoveryTicks, volatilityAcceleration: null });
       return false;
     }
     const evaluation = evaluateAccumulatorEntry(this.tickBuffer, this.config.filters);
-    this.setRuntime({ filterBlocked: !evaluation.allowed, filterReasons: evaluation.reasons, filterSamples: evaluation.samples });
-    if (evaluation.allowed) {
+    if (evaluation.marketRegime === "stable" && evaluation.recoveryConfirmed) this.stableRecoveryTicks = Math.min(3, this.stableRecoveryTicks + 1);
+    else this.stableRecoveryTicks = 0;
+    const recovered = this.stableRecoveryTicks >= 3;
+    const allowed = evaluation.allowed && recovered;
+    const reasons = [...evaluation.reasons];
+    if (!recovered) reasons.push(`Confirmação de estabilidade ${this.stableRecoveryTicks}/3`);
+    this.setRuntime({ filterBlocked: !allowed, filterReasons: reasons, filterSamples: evaluation.samples, entryScore: evaluation.entryScore, marketRegime: evaluation.marketRegime, recoveryTicks: this.stableRecoveryTicks, volatilityAcceleration: evaluation.volatilityAcceleration });
+    if (allowed) {
       this.filterWaitTicks = 0;
       this.setRuntime({ filterWaitTicksRemaining: 0 });
       return true;
     }
-    this.filterWaitTicks = 3;
-    this.setRuntime({ filterBlocked: true, filterWaitTicksRemaining: 3 });
-    logger.system(`ACCU entrada adiada pelos filtros | ${evaluation.reasons.join(" · ")} | aguardar 3 ticks`);
+    this.filterWaitTicks = Math.max(this.filterWaitTicks, 3);
+    this.setRuntime({ filterBlocked: true, filterWaitTicksRemaining: this.filterWaitTicks });
+    logger.system(`ACCU entrada adiada | score ${evaluation.entryScore}/100 | regime ${evaluation.marketRegime} | ${reasons.join(" · ")} | recuperação ${this.stableRecoveryTicks}/3`);
     return false;
   }
 
   private async enter(manual = false, overrides?: { stake?: number; growthRate?: number }) {
-    if (this.destroyed || this.processing || this.entryInFlight || (!manual && !this.config.isBotRunning) || !this.config.isAuthorized || this.activeContractId) return;
+    if (this.destroyed || this.processing || this.entryInFlight || (!manual && (!this.config.isBotRunning || this.config.isBotPaused)) || (manual && this.config.isBotPaused) || !this.config.isAuthorized || this.activeContractId) return;
 
     // Manual operations deliberately bypass predictive entry filters. The filters
     // are a guard only for the automatic reopen -> close -> reopen cycle.
@@ -286,7 +309,7 @@ export class AccumulatorEngineV1 {
       if (!id || !Number.isFinite(ask) || ask <= 0) throw new Error("Proposal ACCU inválida: ID ou ask_price ausente.");
 
       const buy = await derivService.buyProposal(id, ask);
-      if ((!manual && !this.config.isBotRunning) || this.destroyed) {
+      if ((!manual && (!this.config.isBotRunning || this.config.isBotPaused)) || (manual && this.config.isBotPaused) || this.destroyed) {
         this.entryInFlight = false;
         this.setRuntime({ isProcessing: false });
         return;
@@ -503,12 +526,12 @@ export class AccumulatorEngineV1 {
     this.syncRisk();
     this.checkLimits();
 
-    if (this.config.isBotRunning && !this.destroyed && !this.limitTriggered) {
+    if (this.config.isBotRunning && !this.config.isBotPaused && !this.destroyed && !this.limitTriggered) {
       const delay = this.risk.cooldownUntil ? this.config.cooldownAfterLoss * 1000 : 0;
       if (delay) {
         const until = this.risk.cooldownUntil!;
         useBotStore.getState().setLossCooldown({ reason: `Cooldown após ${this.config.maxConsecutiveLosses} perdas consecutivas`, until });
-        setTimeout(() => { if (this.config.isBotRunning) void this.enter(); }, delay);
+        setTimeout(() => { if (this.config.isBotRunning && !this.config.isBotPaused) void this.enter(); }, delay);
       } else {
         void this.enter();
       }
@@ -537,7 +560,7 @@ export class AccumulatorEngineV1 {
   }
 
   private checkLimits() {
-    if (!this.config.isBotRunning || this.limitTriggered) return;
+    if (!this.config.isBotRunning || this.config.isBotPaused || this.limitTriggered) return;
 
     const pnl = this.getSessionPnl();
     if (this.config.targetProfit > 0 && pnl >= this.config.targetProfit) {
@@ -553,7 +576,7 @@ export class AccumulatorEngineV1 {
   }
 
   private checkSessionLimits() {
-    if (!this.config.isBotRunning || this.limitTriggered) return;
+    if (!this.config.isBotRunning || this.config.isBotPaused || this.limitTriggered) return;
 
     const pnl = this.getSessionPnl();
     if (this.config.targetProfit > 0 && pnl >= this.config.targetProfit) {

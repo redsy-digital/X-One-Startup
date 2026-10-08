@@ -23,6 +23,7 @@ export const DIGITS_CONTRACTS: Array<{
 export type DigitsTargetMode = number | "random" | "follow_up";
 
 export interface DigitsConfig {
+  contractDurationTicks: number;
   contract: DigitsContractType;
   targetDigit: DigitsTargetMode;
 }

@@ -1,9 +1,10 @@
-export type LogLevel = "system" | "signal" | "block" | "trade" | "risk" | "error";
+export type LogLevel = "system" | "signal" | "block" | "trade" | "risk" | "error" | "telemetry";
 export interface LogEntry { id: string; time: number; level: LogLevel; message: string; }
 type Subscriber = (entry: LogEntry | null) => void;
 
 class Logger {
-  // SEM LIMITE — todos os logs são guardados durante a sessão
+  // Limite de sessão para evitar crescimento ilimitado do DOM/memória.
+  private readonly MAX_BUFFER = 2000;
   private _buffer: LogEntry[] = [];
   private _subs = new Set<Subscriber>();
 
@@ -20,6 +21,9 @@ class Logger {
       time: Date.now(), level, message
     };
     this._buffer.push(entry);
+    if (this._buffer.length > this.MAX_BUFFER) {
+      this._buffer.splice(0, this._buffer.length - this.MAX_BUFFER);
+    }
     this._subs.forEach(fn => fn(entry));
   }
 
@@ -33,6 +37,7 @@ class Logger {
   trade(msg: string)  { this._push("trade",  msg); }
   risk(msg: string)   { this._push("risk",   msg); }
   error(msg: string)  { this._push("error",  msg); }
+  telemetry(msg: string) { this._push("telemetry", msg); }
 }
 
 export const logger = new Logger();

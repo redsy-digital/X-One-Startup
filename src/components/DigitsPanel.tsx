@@ -20,7 +20,8 @@ const clampNumber = (value: string, min: number, max?: number) => {
 export const DigitsPanel = () => {
   const { settings, updateSettings, isDirty } = useSettingsStore();
   const { runtime } = useDigitsStore();
-  const { isBotRunning } = useBotStore();
+  const { isBotRunning, isBotPaused } = useBotStore();
+  const controlsLocked = isBotRunning && !isBotPaused;
   const needsDigit = digitsContractNeedsDigit(settings.digitsContract);
 
   const setNumber = (key: keyof typeof settings, min: number, max?: number) => (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -38,7 +39,7 @@ export const DigitsPanel = () => {
           <CircleDot className="w-5 h-5 text-purple-400" />
           <div>
             <h2 className="text-lg font-black uppercase tracking-widest">Digits V1</h2>
-            <p className="text-[10px] text-muted-foreground">Entrada determinística · 1 tick · sem indicadores ou previsão</p>
+            <p className="text-[10px] text-muted-foreground">Entrada determinística · duração configurável em ticks · sem indicadores ou previsão</p>
           </div>
         </div>
         <Badge className="bg-purple-500/10 text-purple-300 border-purple-500/30 text-[9px] font-black">{isDirty ? "A GUARDAR" : "PRONTO"}</Badge>
@@ -59,7 +60,7 @@ export const DigitsPanel = () => {
             <Select
               value={settings.digitsContract}
               onValueChange={(value) => updateSettings({ digitsContract: value as DigitsContractType })}
-              disabled={isBotRunning}
+              disabled={controlsLocked}
             >
               <SelectTrigger className="w-full bg-black/30 border-white/10 h-10 text-[11px]">
                 <SelectValue />
@@ -79,7 +80,7 @@ export const DigitsPanel = () => {
             <label className="text-[9px] text-muted-foreground uppercase font-black">{needsDigit ? "Dígito alvo (0–9)" : "Paridade"}</label>
             <Select
               value={needsDigit ? String(settings.digitsTargetDigit) : (settings.digitsTargetDigit === 1 ? "odd" : "even")}
-              disabled={isBotRunning}
+              disabled={controlsLocked}
               onValueChange={(value) => {
                 if (needsDigit) {
                   updateSettings({ digitsTargetDigit: value === "random" || value === "follow_up" ? value : Number(value) });
@@ -122,10 +123,10 @@ export const DigitsPanel = () => {
         </div>
 
         <div className="grid grid-cols-2 gap-3">
-          <Field disabled={isBotRunning} label="Stake inicial ($)" value={settings.stake} step="0.01" min={0.35} onChange={setNumber("stake", 0.35)} />
-          <Field disabled={isBotRunning} label="Take Profit ($)" value={settings.targetProfit} step="0.01" min={0} onChange={setNumber("targetProfit", 0)} />
-          <Field disabled={isBotRunning} label="Stop Loss ($)" value={settings.stopLoss} step="0.01" min={0} onChange={setNumber("stopLoss", 0)} />
-          <Field disabled={isBotRunning} label="Máx. perdas seg." value={settings.maxConsecutiveLosses} step="1" min={1} onChange={setNumber("maxConsecutiveLosses", 1)} />
+          <Field disabled={controlsLocked} label="Stake inicial ($)" value={settings.stake} step="0.01" min={0.35} onChange={setNumber("stake", 0.35)} />
+          <Field disabled={controlsLocked} label="Take Profit da Sessão ($)" value={settings.targetProfit} step="0.01" min={0} onChange={setNumber("targetProfit", 0)} />
+          <Field disabled={controlsLocked} label="Stop Loss da Sessão ($)" value={settings.stopLoss} step="0.01" min={0} onChange={setNumber("stopLoss", 0)} />
+          <Field disabled={controlsLocked} label="Máx. perdas seg." value={settings.maxConsecutiveLosses} step="1" min={1} onChange={setNumber("maxConsecutiveLosses", 1)} />
         </div>
 
         <div className="rounded-xl border border-white/10 bg-black/20 p-3 space-y-3">
@@ -136,7 +137,7 @@ export const DigitsPanel = () => {
             </div>
             <button
               type="button"
-              disabled={isBotRunning}
+              disabled={controlsLocked}
               onClick={() => updateSettings({ useMartingale: !settings.useMartingale })}
               className={cn("w-10 h-6 rounded-full border transition-all disabled:opacity-40", settings.useMartingale ? "bg-purple-600 border-purple-400" : "bg-white/10 border-white/10")}
             >
@@ -146,8 +147,8 @@ export const DigitsPanel = () => {
           {settings.useMartingale && (
             <>
               <div className="grid grid-cols-2 gap-3">
-                <Field disabled={isBotRunning} label="Steps máximos" value={settings.maxMartingaleSteps} step="1" min={0} onChange={setNumber("maxMartingaleSteps", 0)} />
-                <Field disabled={isBotRunning} label="Multiplicador" value={settings.martingaleMultiplier} step="0.1" min={1} onChange={setNumber("martingaleMultiplier", 1)} />
+                <Field disabled={controlsLocked} label="Steps máximos" value={settings.maxMartingaleSteps} step="1" min={0} onChange={setNumber("maxMartingaleSteps", 0)} />
+                <Field disabled={controlsLocked} label="Multiplicador" value={settings.martingaleMultiplier} step="0.1" min={1} onChange={setNumber("martingaleMultiplier", 1)} />
               </div>
 
               <div className="pt-2 border-t border-white/5 space-y-3">
@@ -158,7 +159,7 @@ export const DigitsPanel = () => {
                   </div>
                   <button
                     type="button"
-                    disabled={isBotRunning}
+                    disabled={controlsLocked}
                     onClick={() => updateSettings({ useAdvancedMartingale: !settings.useAdvancedMartingale })}
                     className={cn("w-10 h-6 rounded-full border transition-all disabled:opacity-40", settings.useAdvancedMartingale ? "bg-purple-600 border-purple-400" : "bg-white/10 border-white/10")}
                   >
@@ -173,7 +174,7 @@ export const DigitsPanel = () => {
                         <label className="text-[9px] text-muted-foreground uppercase font-black">Contrato</label>
                         <Select
                           value={settings.advancedMartingaleContract}
-                          disabled={isBotRunning}
+                          disabled={controlsLocked}
                           onValueChange={value => updateSettings({ advancedMartingaleContract: value as DigitsContractType })}
                         >
                           <SelectTrigger className="w-full bg-black/30 border-white/10 h-9 text-[11px]"><SelectValue /></SelectTrigger>
@@ -188,7 +189,7 @@ export const DigitsPanel = () => {
                         <label className="text-[9px] text-muted-foreground uppercase font-black">Dígito</label>
                         <Select
                           value={String(settings.advancedMartingaleTargetDigit)}
-                          disabled={isBotRunning}
+                          disabled={controlsLocked}
                           onValueChange={value => updateSettings({ advancedMartingaleTargetDigit: Number(value) })}
                         >
                           <SelectTrigger className="w-full bg-black/30 border-white/10 h-9 text-[11px]"><SelectValue /></SelectTrigger>
@@ -200,7 +201,7 @@ export const DigitsPanel = () => {
                         </Select>
                       </div>
                     </div>
-                    <Field disabled={isBotRunning} label="Máx. aplicações avançadas seg." value={settings.maxAdvancedMartingaleSteps} step="1" min={1} onChange={setNumber("maxAdvancedMartingaleSteps", 1)} />
+                    <Field disabled={controlsLocked} label="Máx. aplicações avançadas seg." value={settings.maxAdvancedMartingaleSteps} step="1" min={1} onChange={setNumber("maxAdvancedMartingaleSteps", 1)} />
                   </div>
                 )}
               </div>
@@ -208,7 +209,7 @@ export const DigitsPanel = () => {
           )}
         </div>
 
-        <Field disabled={isBotRunning} label="Cooldown após limite (s)" value={settings.cooldownAfterLoss} step="1" min={0} onChange={setNumber("cooldownAfterLoss", 0)} />
+        <Field disabled={controlsLocked} label="Cooldown após limite (s)" value={settings.cooldownAfterLoss} step="1" min={0} onChange={setNumber("cooldownAfterLoss", 0)} />
       </NeonCard>
 
       <NeonCard variant="purple" className="p-5">

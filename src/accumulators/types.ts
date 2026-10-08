@@ -79,4 +79,8 @@ export interface AccumulatorRuntimeState {
   filterReasons: string[];
   filterWaitTicksRemaining: number;
   filterSamples: number;
+  entryScore: number;
+  marketRegime: "stable" | "transition" | "explosion" | "strong_trend";
+  recoveryTicks: number;
+  volatilityAcceleration: number | null;
 }

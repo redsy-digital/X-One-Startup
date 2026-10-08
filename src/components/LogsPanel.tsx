@@ -15,9 +15,10 @@ const LEVEL_CONFIG: Record<LogLevel, { label: string; bg: string; text: string; 
   trade:  { label: "TRADE",   bg: "bg-emerald-500/15", text: "text-emerald-400", dot: "bg-emerald-400" },
   risk:   { label: "RISCO",   bg: "bg-orange-500/15",  text: "text-orange-400",  dot: "bg-orange-400" },
   error:  { label: "ERRO",    bg: "bg-red-500/15",     text: "text-red-400",     dot: "bg-red-400" },
+  telemetry: { label: "WS", bg: "bg-cyan-500/10", text: "text-cyan-300", dot: "bg-cyan-300" },
 };
 
-const ALL_LEVELS: LogLevel[] = ["system", "signal", "block", "trade", "risk", "error"];
+const ALL_LEVELS: LogLevel[] = ["system", "signal", "block", "trade", "risk", "error", "telemetry"];
 
 function formatTime(ts: number) {
   return new Date(ts).toLocaleTimeString("pt-PT", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
@@ -45,6 +46,7 @@ function exportLogsPDF(entries: LogEntry[]) {
     trade:  [16, 185, 129],
     risk:   [249, 115, 22],
     error:  [239, 68, 68],
+    telemetry: [34, 211, 238],
   };
 
   for (const entry of entries) {
@@ -72,20 +74,52 @@ function exportLogsPDF(entries: LogEntry[]) {
 
 // ── LogsPanel ─────────────────────────────────────────────────────────────────
 export const LogsPanel = () => {
-  const [entries, setEntries] = useState<LogEntry[]>(() => logger.getAll()); // SEM LIMITE
+  const [entries, setEntries] = useState<LogEntry[]>(() => logger.getAll());
   const [activeFilters, setActiveFilters] = useState<Set<LogLevel>>(new Set(ALL_LEVELS));
   const [newActivityCount, setNewActivityCount] = useState(0);
   const [isAtBottom, setIsAtBottom] = useState(true);
   const scrollRef = useRef<HTMLDivElement>(null);
   const isAtBottomRef = useRef(true);
 
+  const pendingEntriesRef = useRef<LogEntry[]>([]);
+  const flushTimerRef = useRef<number | null>(null);
+
   useEffect(() => {
+    const flush = () => {
+      flushTimerRef.current = null;
+      if (pendingEntriesRef.current.length === 0) return;
+      const pending = pendingEntriesRef.current;
+      pendingEntriesRef.current = [];
+      setEntries(prev => [...prev, ...pending]);
+      if (!isAtBottomRef.current) setNewActivityCount(c => c + pending.length);
+    };
+
+    const scheduleFlush = () => {
+      if (flushTimerRef.current !== null) return;
+      flushTimerRef.current = window.setTimeout(flush, 120);
+    };
+
     const unsub = logger.subscribe((entry) => {
-      if (!entry) { setEntries([]); setNewActivityCount(0); return; }
-      setEntries(prev => [...prev, entry]); // SEM LIMITE
-      if (!isAtBottomRef.current) setNewActivityCount(c => c + 1);
+      if (!entry) {
+        pendingEntriesRef.current = [];
+        if (flushTimerRef.current !== null) {
+          window.clearTimeout(flushTimerRef.current);
+          flushTimerRef.current = null;
+        }
+        setEntries([]);
+        setNewActivityCount(0);
+        return;
+      }
+      pendingEntriesRef.current.push(entry);
+      scheduleFlush();
     });
-    return unsub;
+
+    return () => {
+      unsub();
+      pendingEntriesRef.current = [];
+      if (flushTimerRef.current !== null) window.clearTimeout(flushTimerRef.current);
+      flushTimerRef.current = null;
+    };
   }, []);
 
   // Auto-scroll dentro do container — não usa scrollIntoView
@@ -175,11 +209,13 @@ export const LogsPanel = () => {
         <div
           ref={scrollRef}
           onScroll={handleScroll}
-          className="h-full overflow-y-auto p-3 space-y-1 font-mono"
+          className="h-full min-h-0 overflow-y-auto p-3 space-y-1 font-mono"
           style={{
             scrollbarWidth: "thin",
             scrollbarColor: "rgba(124,58,237,0.3) transparent",
-            overscrollBehavior: "contain",  // ← impede scroll da página
+            overscrollBehavior: "contain",
+            touchAction: "pan-y",
+            WebkitOverflowScrolling: "touch",
           }}
         >
           {filteredEntries.length === 0 ? (

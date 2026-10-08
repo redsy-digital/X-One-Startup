@@ -4,14 +4,22 @@ import { useBotStore } from "../store/useBotStore";
 import { DigitsEngineV1, type DigitsEngineConfig } from "./engine";
 import type { DigitsConfig, DigitsRiskConfig } from "./types";
 
+type UseDigitsEngineConfig = DigitsConfig & DigitsRiskConfig & {
+  sequenceStrategyEnabled: boolean; sequenceStrategyMode: "fixed" | "multiple"; sequenceLength: number;
+  symbol: string; isAuthorized: boolean; isBotRunning: boolean; balance: number | null;
+  overUnderSequenceStrategyEnabled: boolean; overUnderSequenceLength: number;
+  overUnderOverBarrier: number; overUnderUnderBarrier: number;
+  percentageSaturationStrategyEnabled: boolean; percentageSaturationThreshold: number;
+  percentageAbsenceStrategyEnabled: boolean; percentageAbsenceStreak: number; percentageWindow: number;
+  parityBlockDensityEnabled: boolean; parityBlockWindow: number; parityBlockThreshold: number;
+  parityAlternatingEnabled: boolean; parityAlternatingLength: number; parityAnchorEnabled: boolean;
+  matchTwinEnabled: boolean; matchTwinRestTicks: number;
+  matchMirrorEnabled: boolean; matchMirrorWindow: number; matchMirrorDominance: number; isBotPaused: boolean;
+};
+
 let activeDigitsEngine: DigitsEngineV1 | null = null;
 
-function buildEngineConfig(config: DigitsConfig & DigitsRiskConfig & {
-  symbol: string;
-  isAuthorized: boolean;
-  isBotRunning: boolean;
-  balance: number | null;
-}): DigitsEngineConfig {
+function buildEngineConfig(config: UseDigitsEngineConfig): DigitsEngineConfig {
   return {
     ...config,
     onForceStop: (reason) => {
@@ -21,12 +29,7 @@ function buildEngineConfig(config: DigitsConfig & DigitsRiskConfig & {
   };
 }
 
-export function useDigitsEngine(config: DigitsConfig & DigitsRiskConfig & {
-  symbol: string;
-  isAuthorized: boolean;
-  isBotRunning: boolean;
-  balance: number | null;
-}) {
+export function useDigitsEngine(config: UseDigitsEngineConfig) {
   useEffect(() => {
     const engine = new DigitsEngineV1(buildEngineConfig(config));
     activeDigitsEngine = engine;
@@ -46,6 +49,7 @@ export function useDigitsEngine(config: DigitsConfig & DigitsRiskConfig & {
   }, [
     config.contract,
     config.targetDigit,
+    config.contractDurationTicks,
     config.stake,
     config.targetProfit,
     config.stopLoss,
@@ -57,6 +61,30 @@ export function useDigitsEngine(config: DigitsConfig & DigitsRiskConfig & {
     config.advancedMartingaleTargetDigit,
     config.maxAdvancedMartingaleSteps,
     config.maxConsecutiveLosses,
+    config.sequenceStrategyEnabled,
+    config.sequenceStrategyMode,
+    config.sequenceLength,
+    config.overUnderSequenceStrategyEnabled,
+    config.overUnderSequenceLength,
+    config.overUnderOverBarrier,
+    config.overUnderUnderBarrier,
+    config.percentageSaturationStrategyEnabled,
+    config.percentageSaturationThreshold,
+    config.percentageAbsenceStrategyEnabled,
+    config.percentageAbsenceStreak,
+    config.percentageWindow,
+    config.parityBlockDensityEnabled,
+    config.parityBlockWindow,
+    config.parityBlockThreshold,
+    config.parityAlternatingEnabled,
+    config.parityAlternatingLength,
+    config.parityAnchorEnabled,
+    config.matchTwinEnabled,
+    config.matchTwinRestTicks,
+    config.matchMirrorEnabled,
+    config.matchMirrorWindow,
+    config.matchMirrorDominance,
+    config.isBotPaused,
     config.cooldownAfterLoss,
     config.symbol,
     config.isAuthorized,

@@ -4,7 +4,12 @@ import { supabase } from "../lib/supabase";
 import { derivService } from "../lib/deriv";
 import { logger } from "../lib/logger";
 import { useMarketStore } from "./useMarketStore";
-import { DerivAccount } from "../lib/derivOAuth";
+import {
+  DerivAccount,
+  clearDerivOAuthSession,
+  loadDerivOAuthSession,
+  saveDerivOAuthSession,
+} from "../lib/derivOAuth";
 
 // ── Estado ────────────────────────────────────────────────────────────────────
 
@@ -35,6 +40,7 @@ interface ConnectionState {
 
   // Actions — Deriv PAT
   connectWithPAT: (pat: string) => Promise<string | null>;
+  connectWithOAuthToken: (accessToken: string) => Promise<string | null>;
   switchAccount: (isDemo: boolean) => void;
   disconnectDeriv: () => Promise<void>;
   handleDerivAuthFailure: (message: string) => void;
@@ -108,6 +114,7 @@ export const useConnectionStore = create<ConnectionState>((set, get) => ({
 
   signOut: async () => {
     derivService.disconnect();
+    clearDerivOAuthSession();
     await supabase.auth.signOut();
   },
 
@@ -141,17 +148,18 @@ export const useConnectionStore = create<ConnectionState>((set, get) => ({
           String(a.account_id ?? "").toUpperCase().startsWith("VRT"),
       }));
 
-      // 3. Conta activa: demo preferida
+      // 3. Conta activa por defeito: Real (Demo fica disponível no header)
       const demoAccount = accounts.find((a) => a.is_demo) ?? accounts[0];
+      const realAccount = accounts.find((a) => !a.is_demo) ?? demoAccount;
 
       // 4. Guardar no Supabase
       const { error: upsertError } = await supabase.from("deriv_connections").upsert(
         {
           user_id: supabaseUser.id,
-          account_id: demoAccount.account_id,
+          account_id: realAccount.account_id,
           token: pat, // token = PAT (encriptado no Supabase)
-          currency: demoAccount.currency,
-          is_demo: demoAccount.is_demo,
+          currency: realAccount.currency,
+          is_demo: realAccount.is_demo,
           accounts: accounts,
           last_used_at: new Date().toISOString(),
           is_active: true,
@@ -170,16 +178,16 @@ export const useConnectionStore = create<ConnectionState>((set, get) => ({
       // 5. Actualizar store
       set({
         derivAccounts: accounts,
-        activeAccount: demoAccount,
-        isDemo: demoAccount.is_demo,
+        activeAccount: realAccount,
+        isDemo: realAccount.is_demo,
         token: pat,
       });
 
-      const accType = demoAccount.is_demo ? "Demo" : "Real";
+      const accType = realAccount.is_demo ? "Demo" : "Real";
       logger.system(`Token PAT aceite | ${accounts.length} conta(s) | A conectar à ${accType}...`);
 
       // 6. Conectar WebSocket via OTP
-      derivService.connect(demoAccount.account_id, demoAccount.is_demo);
+      derivService.connect(realAccount.account_id, realAccount.is_demo);
 
       return null; // sem erro
     } catch (e: any) {
@@ -197,6 +205,54 @@ export const useConnectionStore = create<ConnectionState>((set, get) => ({
       } else {
         set({ derivLoading: false, derivError: msg });
       }
+      return msg;
+    }
+  },
+
+  // ── OAuth 2.0 ─────────────────────────────────────────────────────────────
+
+  connectWithOAuthToken: async (accessToken: string) => {
+    const { supabaseUser } = get();
+    if (!supabaseUser) return "Utilizador não autenticado.";
+
+    set({ derivLoading: true, derivError: null, derivTokenExpired: false });
+
+    try {
+      derivService.setOAuthToken(accessToken);
+      const rawAccounts = await derivService.fetchAccounts();
+      if (!rawAccounts?.length) {
+        set({ derivLoading: false, derivError: "Nenhuma conta Deriv disponível para este acesso OAuth." });
+        return "Nenhuma conta Deriv disponível para este acesso OAuth.";
+      }
+
+      const accounts: DerivAccount[] = rawAccounts.map((a: any) => ({
+        account_id: String(a.account_id),
+        token: accessToken,
+        currency: a.currency ?? "USD",
+        is_demo: a.account_type === "demo" || a.is_virtual === true || a.is_virtual === 1 || String(a.account_id ?? "").toUpperCase().startsWith("VRT"),
+      }));
+      const active = accounts.find((a) => !a.is_demo) ?? accounts[0];
+
+      set({
+        derivAccounts: accounts,
+        activeAccount: active,
+        isDemo: active.is_demo,
+        token: accessToken,
+        derivLoading: true,
+        derivError: null,
+      });
+      saveDerivOAuthSession(accessToken, accounts, active);
+      logger.system(`OAuth Deriv aceite | ${accounts.length} conta(s) | A conectar à ${active.is_demo ? "Demo" : "Real"}...`);
+      derivService.connect(active.account_id, active.is_demo);
+      return null;
+    } catch (e: any) {
+      const isAuthFailure = e?.code === "AUTH_TOKEN_INVALID" || e?.status === 401 || e?.status === 403;
+      const msg = isAuthFailure
+        ? "A autorização OAuth da Deriv foi recusada ou expirou. Autoriza novamente."
+        : (e?.message || "Erro ao conectar à Deriv via OAuth.");
+      logger.error(`OAuth Deriv: ${msg}`);
+      clearDerivOAuthSession();
+      set({ derivLoading: false, derivError: msg, derivTokenExpired: isAuthFailure, isAuthorized: false });
       return msg;
     }
   },
@@ -224,8 +280,13 @@ export const useConnectionStore = create<ConnectionState>((set, get) => ({
       balance: null,
     });
 
-    // Reconecta com o mesmo PAT mas para outra conta (novo OTP)
-    derivService.setToken(token, target.is_demo);
+    // Reconecta com a mesma credencial OAuth/PAT mas para outra conta (novo OTP)
+    const oauthSession = loadDerivOAuthSession();
+    if (oauthSession) {
+      derivService.setOAuthToken(token, target.is_demo);
+    } else {
+      derivService.setToken(token, target.is_demo);
+    }
     derivService.connect(target.account_id, target.is_demo);
   },
 
@@ -257,6 +318,7 @@ export const useConnectionStore = create<ConnectionState>((set, get) => ({
     const { supabaseUser } = get();
 
     logger.system("Deriv desconectado pelo utilizador");
+    clearDerivOAuthSession();
     derivService.disconnect();
     set({
       derivAccounts: [], activeAccount: null,
@@ -288,6 +350,24 @@ async function _loadDerivConnection(set: any) {
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return;
 
+  const oauthSession = loadDerivOAuthSession();
+  if (oauthSession?.accessToken && oauthSession.accounts.length) {
+    const active = oauthSession.accounts.find((a) => !a.is_demo) ?? oauthSession.activeAccount ?? oauthSession.accounts[0];
+    set({
+      derivAccounts: oauthSession.accounts,
+      activeAccount: active,
+      isDemo: active.is_demo,
+      token: oauthSession.accessToken,
+      isAuthorized: false,
+      derivLoading: true,
+      derivError: null,
+      derivTokenExpired: false,
+    });
+    derivService.setOAuthToken(oauthSession.accessToken, active.is_demo);
+    derivService.connect(active.account_id, active.is_demo);
+    return;
+  }
+
   const { data, error } = await supabase
     .from("deriv_connections")
     .select("*")
@@ -304,7 +384,7 @@ async function _loadDerivConnection(set: any) {
     is_demo: data.is_demo,
   }];
 
-  const active = accounts.find((a) => a.is_demo === data.is_demo) ?? accounts[0];
+  const active = accounts.find((a) => !a.is_demo) ?? accounts[0];
   const pat = data.token;
 
   set({

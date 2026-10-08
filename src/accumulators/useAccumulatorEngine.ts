@@ -6,11 +6,11 @@ import type { AccumulatorConfig } from "./types";
 
 let activeAccumulatorEngine: AccumulatorEngineV1 | null = null;
 
-function buildConfig(config: AccumulatorConfig & { isAuthorized: boolean; isBotRunning: boolean; balance: number | null }): AccumulatorEngineConfig {
+function buildConfig(config: AccumulatorConfig & { isAuthorized: boolean; isBotRunning: boolean; isBotPaused: boolean; balance: number | null }): AccumulatorEngineConfig {
   return { ...config, onForceStop: (reason) => { logger.risk(`Accumulators V1: ${reason}`); useBotStore.getState().setIsBotRunning(false); } };
 }
 
-export function useAccumulatorEngine(config: AccumulatorConfig & { isAuthorized: boolean; isBotRunning: boolean; balance: number | null }) {
+export function useAccumulatorEngine(config: AccumulatorConfig & { isAuthorized: boolean; isBotRunning: boolean; isBotPaused: boolean; balance: number | null }) {
   useEffect(() => {
     const engine = new AccumulatorEngineV1(buildConfig(config));
     activeAccumulatorEngine = engine;
@@ -27,7 +27,7 @@ export function useAccumulatorEngine(config: AccumulatorConfig & { isAuthorized:
     config.closeMode, config.profitPercentTarget, config.contractTakeProfit,
     config.useProfitMartingale, config.profitMartingaleTarget,
     config.filters,
-    config.isAuthorized, config.isBotRunning, config.balance,
+    config.isAuthorized, config.isBotRunning, config.isBotPaused, config.balance,
   ]);
 
   useEffect(() => {

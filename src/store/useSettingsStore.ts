@@ -3,6 +3,7 @@ import { supabase } from "../lib/supabase";
 import type { StrategyProfile } from "../types";
 import type { DigitsContractType, DigitsTargetMode } from "../digits/types";
 import { logger } from "../lib/logger";
+import type { DigitsSequenceMode } from "../digits/sequenceStrategy";
 
 export interface BotSettings {
   // Gestão de banca partilhada pela operação de Índices/Digits V1.
@@ -23,6 +24,54 @@ export interface BotSettings {
   useSoros: boolean;
   maxSorosLevels: number;
   contractDurationTicks: number;
+  digitsChartType: "digits" | "percentage" | "candles";
+  digitsSymbol: string;
+
+  // Estratégia opcional de sequência Par/Ímpar.
+  digitsSequenceStrategyEnabled: boolean;
+  digitsSequenceStrategyMode: DigitsSequenceMode;
+  digitsSequenceLength: number;
+
+  // Estratégia opcional de sequência Over/Under.
+  digitsOverUnderSequenceStrategyEnabled: boolean;
+  digitsOverUnderSequenceLength: number;
+  digitsOverUnderOverBarrier: number;
+  digitsOverUnderUnderBarrier: number;
+
+  // Estratégias estatísticas sobre a distribuição percentual dos últimos dígitos.
+  digitsPercentageSaturationStrategyEnabled: boolean;
+  digitsPercentageSaturationThreshold: number;
+  digitsPercentageAbsenceStrategyEnabled: boolean;
+  digitsPercentageAbsenceStreak: number;
+  digitsPercentageWindow: number;
+
+  // Estratégias probabilísticas de Par/Ímpar.
+  digitsParityBlockDensityEnabled: boolean;
+  digitsParityBlockWindow: number;
+  digitsParityBlockThreshold: number;
+  digitsParityAlternatingEnabled: boolean;
+  digitsParityAlternatingLength: number;
+  digitsParityAnchorEnabled: boolean;
+
+  // Estratégias adicionais específicas de Digit Match.
+  digitsMatchTwinEnabled: boolean;
+  digitsMatchTwinRestTicks: number;
+  digitsMatchMirrorEnabled: boolean;
+  digitsMatchMirrorWindow: number;
+  digitsMatchMirrorDominance: number;
+
+  // Rise/Fall — direção de ticks em Índices Sintéticos.
+  riseFallSymbol: string;
+  riseFallDurationTicks: number;
+  riseFallChartType: "candles" | "line";
+  riseFallContract: "CALL" | "PUT";
+  riseFallSequenceEnabled: boolean;
+  riseFallSequenceLength: number;
+  riseFallBlockDensityEnabled: boolean;
+  riseFallBlockWindow: number;
+  riseFallBlockThreshold: number;
+  riseFallAlternatingEnabled: boolean;
+  riseFallAlternatingLength: number;
 
   // Digits V1 — entrada fixa, sem indicadores/previsão.
   digitsContract: DigitsContractType;
@@ -51,7 +100,44 @@ export const DEFAULT_SETTINGS: BotSettings = {
   strategyProfile: "balanced",
   useSoros: false,
   maxSorosLevels: 0,
-  contractDurationTicks: 1,
+  contractDurationTicks: 3,
+  digitsChartType: "digits",
+  digitsSymbol: "R_10",
+  digitsSequenceStrategyEnabled: false,
+  digitsSequenceStrategyMode: "fixed",
+  digitsSequenceLength: 6,
+  digitsOverUnderSequenceStrategyEnabled: false,
+  digitsOverUnderSequenceLength: 5,
+  digitsOverUnderOverBarrier: 4,
+  digitsOverUnderUnderBarrier: 5,
+  digitsPercentageSaturationStrategyEnabled: false,
+  digitsPercentageSaturationThreshold: 18,
+  digitsPercentageAbsenceStrategyEnabled: false,
+  digitsPercentageAbsenceStreak: 38,
+  digitsPercentageWindow: 100,
+  digitsParityBlockDensityEnabled: false,
+  digitsParityBlockWindow: 10,
+  digitsParityBlockThreshold: 80,
+  digitsParityAlternatingEnabled: false,
+  digitsParityAlternatingLength: 4,
+  digitsParityAnchorEnabled: false,
+  digitsMatchTwinEnabled: false,
+  digitsMatchTwinRestTicks: 3,
+  digitsMatchMirrorEnabled: false,
+  digitsMatchMirrorWindow: 15,
+  digitsMatchMirrorDominance: 80,
+
+  riseFallSymbol: "R_10",
+  riseFallDurationTicks: 3,
+  riseFallChartType: "candles",
+  riseFallContract: "CALL",
+  riseFallSequenceEnabled: false,
+  riseFallSequenceLength: 4,
+  riseFallBlockDensityEnabled: false,
+  riseFallBlockWindow: 10,
+  riseFallBlockThreshold: 80,
+  riseFallAlternatingEnabled: false,
+  riseFallAlternatingLength: 4,
 
   digitsContract: "DIGITUNDER",
   digitsTargetDigit: 9,
@@ -93,6 +179,43 @@ async function saveToSupabase(settings: BotSettings) {
       max_martingale_steps: settings.maxMartingaleSteps,
       max_consecutive_losses: settings.maxConsecutiveLosses,
       cooldown_after_loss: settings.cooldownAfterLoss,
+      contract_duration_ticks: Math.max(1, Math.min(100, Math.round(settings.contractDurationTicks))),
+      digits_chart_type: settings.digitsChartType,
+      digits_symbol: settings.digitsSymbol,
+      digits_sequence_strategy_enabled: settings.digitsSequenceStrategyEnabled,
+      digits_sequence_strategy_mode: settings.digitsSequenceStrategyMode,
+      digits_sequence_length: Math.max(1, Math.min(100, Math.round(settings.digitsSequenceLength))),
+      digits_over_under_sequence_strategy_enabled: settings.digitsOverUnderSequenceStrategyEnabled,
+      digits_over_under_sequence_length: Math.max(1, Math.min(100, Math.round(settings.digitsOverUnderSequenceLength))),
+      digits_over_under_over_barrier: Math.max(0, Math.min(9, Math.round(settings.digitsOverUnderOverBarrier))),
+      digits_over_under_under_barrier: Math.max(0, Math.min(9, Math.round(settings.digitsOverUnderUnderBarrier))),
+      digits_percentage_saturation_strategy_enabled: settings.digitsPercentageSaturationStrategyEnabled,
+      digits_percentage_saturation_threshold: Math.max(10.01, Math.min(100, Number(settings.digitsPercentageSaturationThreshold))),
+      digits_percentage_absence_strategy_enabled: settings.digitsPercentageAbsenceStrategyEnabled,
+      digits_percentage_absence_streak: Math.max(1, Math.min(10000, Math.round(settings.digitsPercentageAbsenceStreak))),
+      digits_percentage_window: Math.max(20, Math.min(1000, Math.round(settings.digitsPercentageWindow))),
+      digits_parity_block_density_enabled: settings.digitsParityBlockDensityEnabled,
+      digits_parity_block_window: Math.max(2, Math.min(100, Math.round(settings.digitsParityBlockWindow))),
+      digits_parity_block_threshold: Math.max(50, Math.min(100, Number(settings.digitsParityBlockThreshold))),
+      digits_parity_alternating_enabled: settings.digitsParityAlternatingEnabled,
+      digits_parity_alternating_length: Math.max(2, Math.min(20, Math.round(settings.digitsParityAlternatingLength))),
+      digits_parity_anchor_enabled: settings.digitsParityAnchorEnabled,
+      digits_match_twin_enabled: settings.digitsMatchTwinEnabled,
+      digits_match_twin_rest_ticks: Math.max(0, Math.min(20, Math.round(settings.digitsMatchTwinRestTicks))),
+      digits_match_mirror_enabled: settings.digitsMatchMirrorEnabled,
+      digits_match_mirror_window: Math.max(4, Math.min(100, Math.round(settings.digitsMatchMirrorWindow))),
+      digits_match_mirror_dominance: Math.max(50, Math.min(100, Number(settings.digitsMatchMirrorDominance))),
+      rise_fall_symbol: settings.riseFallSymbol,
+      rise_fall_duration_ticks: Math.max(1, Math.min(100, Math.round(settings.riseFallDurationTicks))),
+      rise_fall_chart_type: settings.riseFallChartType === "line" ? "line" : "candles",
+      rise_fall_contract: settings.riseFallContract === "PUT" ? "PUT" : "CALL",
+      rise_fall_sequence_enabled: settings.riseFallSequenceEnabled,
+      rise_fall_sequence_length: Math.max(1, Math.min(100, Math.round(settings.riseFallSequenceLength))),
+      rise_fall_block_density_enabled: settings.riseFallBlockDensityEnabled,
+      rise_fall_block_window: Math.max(2, Math.min(100, Math.round(settings.riseFallBlockWindow))),
+      rise_fall_block_threshold: Math.max(50, Math.min(100, Number(settings.riseFallBlockThreshold))),
+      rise_fall_alternating_enabled: settings.riseFallAlternatingEnabled,
+      rise_fall_alternating_length: Math.max(2, Math.min(20, Math.round(settings.riseFallAlternatingLength))),
       digits_contract: settings.digitsContract,
       // Random is persisted separately because the database target_digit column is numeric.
       digits_target_digit: typeof settings.digitsTargetDigit === "number" ? settings.digitsTargetDigit : 9,
@@ -168,7 +291,43 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
           maxSorosLevels: numberOr(data.max_soros_levels, 0),
           maxConsecutiveLosses: numberOr(data.max_consecutive_losses, DEFAULT_SETTINGS.maxConsecutiveLosses),
           cooldownAfterLoss: numberOr(data.cooldown_after_loss, DEFAULT_SETTINGS.cooldownAfterLoss),
-          contractDurationTicks: 1,
+          contractDurationTicks: Math.max(1, Math.min(100, numberOr(data.contract_duration_ticks, DEFAULT_SETTINGS.contractDurationTicks))),
+          digitsChartType: data.digits_chart_type === "percentage" || data.digits_chart_type === "candles" ? data.digits_chart_type : "digits",
+          digitsSymbol: typeof data.digits_symbol === "string" && data.digits_symbol ? data.digits_symbol : DEFAULT_SETTINGS.digitsSymbol,
+          digitsSequenceStrategyEnabled: Boolean(data.digits_sequence_strategy_enabled),
+          digitsSequenceStrategyMode: data.digits_sequence_strategy_mode === "multiple" ? "multiple" : "fixed",
+          digitsSequenceLength: Math.max(1, Math.min(100, numberOr(data.digits_sequence_length, DEFAULT_SETTINGS.digitsSequenceLength))),
+          digitsOverUnderSequenceStrategyEnabled: Boolean(data.digits_over_under_sequence_strategy_enabled),
+          digitsOverUnderSequenceLength: Math.max(1, Math.min(100, numberOr(data.digits_over_under_sequence_length, DEFAULT_SETTINGS.digitsOverUnderSequenceLength))),
+          digitsOverUnderOverBarrier: Math.max(0, Math.min(9, numberOr(data.digits_over_under_over_barrier, DEFAULT_SETTINGS.digitsOverUnderOverBarrier))),
+          digitsOverUnderUnderBarrier: Math.max(0, Math.min(9, numberOr(data.digits_over_under_under_barrier, DEFAULT_SETTINGS.digitsOverUnderUnderBarrier))),
+          digitsPercentageSaturationStrategyEnabled: Boolean(data.digits_percentage_saturation_strategy_enabled),
+          digitsPercentageSaturationThreshold: Math.max(10.01, Math.min(100, numberOr(data.digits_percentage_saturation_threshold, DEFAULT_SETTINGS.digitsPercentageSaturationThreshold))),
+          digitsPercentageAbsenceStrategyEnabled: Boolean(data.digits_percentage_absence_strategy_enabled),
+          digitsPercentageAbsenceStreak: Math.max(1, Math.min(10000, Math.round(numberOr(data.digits_percentage_absence_streak, DEFAULT_SETTINGS.digitsPercentageAbsenceStreak)))),
+          digitsPercentageWindow: Math.max(20, Math.min(1000, Math.round(numberOr(data.digits_percentage_window, DEFAULT_SETTINGS.digitsPercentageWindow)))),
+          digitsParityBlockDensityEnabled: Boolean(data.digits_parity_block_density_enabled),
+          digitsParityBlockWindow: Math.max(2, Math.min(100, Math.round(numberOr(data.digits_parity_block_window, DEFAULT_SETTINGS.digitsParityBlockWindow)))),
+          digitsParityBlockThreshold: Math.max(50, Math.min(100, numberOr(data.digits_parity_block_threshold, DEFAULT_SETTINGS.digitsParityBlockThreshold))),
+          digitsParityAlternatingEnabled: Boolean(data.digits_parity_alternating_enabled),
+          digitsParityAlternatingLength: Math.max(2, Math.min(20, Math.round(numberOr(data.digits_parity_alternating_length, DEFAULT_SETTINGS.digitsParityAlternatingLength)))),
+          digitsParityAnchorEnabled: Boolean(data.digits_parity_anchor_enabled),
+          digitsMatchTwinEnabled: Boolean(data.digits_match_twin_enabled),
+          digitsMatchTwinRestTicks: Math.max(0, Math.min(20, Math.round(numberOr(data.digits_match_twin_rest_ticks, DEFAULT_SETTINGS.digitsMatchTwinRestTicks)))),
+          digitsMatchMirrorEnabled: Boolean(data.digits_match_mirror_enabled),
+          digitsMatchMirrorWindow: Math.max(4, Math.min(100, Math.round(numberOr(data.digits_match_mirror_window, DEFAULT_SETTINGS.digitsMatchMirrorWindow)))),
+          digitsMatchMirrorDominance: Math.max(50, Math.min(100, numberOr(data.digits_match_mirror_dominance, DEFAULT_SETTINGS.digitsMatchMirrorDominance))),
+          riseFallSymbol: typeof data.rise_fall_symbol === "string" && data.rise_fall_symbol ? data.rise_fall_symbol : DEFAULT_SETTINGS.riseFallSymbol,
+          riseFallDurationTicks: Math.max(1, Math.min(100, numberOr(data.rise_fall_duration_ticks, DEFAULT_SETTINGS.riseFallDurationTicks))),
+          riseFallChartType: data.rise_fall_chart_type === "line" ? "line" : "candles",
+          riseFallContract: data.rise_fall_contract === "PUT" ? "PUT" : "CALL",
+          riseFallSequenceEnabled: Boolean(data.rise_fall_sequence_enabled),
+          riseFallSequenceLength: Math.max(1, Math.min(100, numberOr(data.rise_fall_sequence_length, DEFAULT_SETTINGS.riseFallSequenceLength))),
+          riseFallBlockDensityEnabled: Boolean(data.rise_fall_block_density_enabled),
+          riseFallBlockWindow: Math.max(2, Math.min(100, numberOr(data.rise_fall_block_window, DEFAULT_SETTINGS.riseFallBlockWindow))),
+          riseFallBlockThreshold: Math.max(50, Math.min(100, numberOr(data.rise_fall_block_threshold, DEFAULT_SETTINGS.riseFallBlockThreshold))),
+          riseFallAlternatingEnabled: Boolean(data.rise_fall_alternating_enabled),
+          riseFallAlternatingLength: Math.max(2, Math.min(20, numberOr(data.rise_fall_alternating_length, DEFAULT_SETTINGS.riseFallAlternatingLength))),
           digitsContract: normalizeDigitsContract(data.digits_contract),
           digitsTargetDigit: Boolean(data.digits_follow_up)
             ? "follow_up"

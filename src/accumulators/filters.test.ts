@@ -32,3 +32,14 @@ describe("Accumulator entry filters", () => {
     expect(conservative.growthRate).toBe(0.01);
   });
 });
+
+describe("Accumulator V3 regime analyzer", () => {
+  it("flags an abrupt volatility expansion as defensive", () => {
+    const prices = Array.from({ length: 80 }, (_, i) => 100 + i * 0.001);
+    prices.push(100.081, 100.12, 100.20, 100.35, 100.55, 100.80, 101.10, 101.45);
+    const result = evaluateAccumulatorEntry(prices, { tickRange: true, microTrend: true, consecutiveTicks: true, bollinger: true, simpleVolatility: true });
+    expect(["explosion", "strong_trend", "transition"]).toContain(result.marketRegime);
+    expect(result.allowed).toBe(false);
+    expect(result.entryScore).toBeLessThan(75);
+  });
+});

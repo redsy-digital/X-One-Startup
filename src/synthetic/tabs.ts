@@ -2,7 +2,7 @@ import { create } from "zustand";
 import type { AccumulatorConfig } from "../accumulators/types";
 import { DEFAULT_ACCUMULATOR_FILTERS } from "../accumulators/filters";
 
-export type SyntheticOperationKind = "digits" | "accumulators";
+export type SyntheticOperationKind = "digits" | "rise_fall" | "accumulators";
 
 export interface SyntheticOperationTab {
   id: string;
@@ -44,6 +44,7 @@ const DEFAULT_ACCU: AccumulatorConfig = {
   contractTakeProfit: 0.5,
   useProfitMartingale: false,
   profitMartingaleTarget: 0.5,
+  filters: { ...DEFAULT_ACCUMULATOR_FILTERS },
 };
 
 export const useSyntheticTabsStore = create<SyntheticTabsState>((set) => ({
@@ -51,8 +52,8 @@ export const useSyntheticTabsStore = create<SyntheticTabsState>((set) => ({
   createTab: (kind) => {
     const id = makeId();
     const tab: SyntheticOperationTab = {
-      id, kind, name: kind === "digits" ? `Digits ${sequence}` : `Accumulators ${sequence}`,
-      symbol: "1HZ100V", createdAt: Date.now(),
+      id, kind, name: kind === "digits" ? `Digits ${sequence}` : kind === "rise_fall" ? `Rise/Fall ${sequence}` : `Accumulators ${sequence}`,
+      symbol: kind === "accumulators" ? "1HZ100V" : "R_10", createdAt: Date.now(),
       ...(kind === "accumulators" ? { accumulator: { ...DEFAULT_ACCU } } : {}),
     };
     set(s => ({ tabs: [...s.tabs, tab], activeTabId: id }));

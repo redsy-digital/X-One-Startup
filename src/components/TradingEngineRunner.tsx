@@ -5,6 +5,7 @@ import { useAccumulatorEngine } from "../accumulators/useAccumulatorEngine";
 import { forexRuntimeIntegrationV1 } from "../forex/runtime";
 import { useSyntheticTabsStore } from "../synthetic/tabs";
 import { DEFAULT_ACCUMULATOR_FILTERS } from "../accumulators/filters";
+import { useRiseFallEngine } from "../rise-fall/useRiseFallEngine";
 
 /**
  * Runtime coordinator. Forex remains isolated. Synthetic operation tabs share
@@ -13,7 +14,7 @@ import { DEFAULT_ACCUMULATOR_FILTERS } from "../accumulators/filters";
  */
 export const TradingEngineRunner = () => {
   const { isAuthorized, balance } = useConnectionStore();
-  const { isBotRunning } = useBotStore();
+  const { isBotRunning, isBotPaused } = useBotStore();
   const { market, symbol } = useMarketStore();
   const { settings } = useSettingsStore();
   const { tabs, runningTabId, setRunningTabId } = useSyntheticTabsStore();
@@ -30,6 +31,7 @@ export const TradingEngineRunner = () => {
   }, [market, isBotRunning, isAuthorized]);
 
   const digitsRunning = isBotRunning && market === "synthetic" && runningTab?.kind === "digits";
+  const riseFallRunning = isBotRunning && market === "synthetic" && runningTab?.kind === "rise_fall";
   const accumRunning = isBotRunning && market === "synthetic" && runningTab?.kind === "accumulators";
   const syntheticSymbol = runningTab?.symbol ?? symbol;
   const accumulator = runningTab?.accumulator;
@@ -37,6 +39,7 @@ export const TradingEngineRunner = () => {
   useDigitsEngine({
     contract: settings.digitsContract,
     targetDigit: settings.digitsTargetDigit,
+    contractDurationTicks: settings.contractDurationTicks,
     symbol: syntheticSymbol,
     isAuthorized,
     isBotRunning: digitsRunning,
@@ -53,6 +56,55 @@ export const TradingEngineRunner = () => {
     maxAdvancedMartingaleSteps: settings.maxAdvancedMartingaleSteps,
     maxConsecutiveLosses: settings.maxConsecutiveLosses,
     cooldownAfterLoss: settings.cooldownAfterLoss,
+    isBotPaused,
+    sequenceStrategyEnabled: settings.digitsSequenceStrategyEnabled && (settings.digitsContract === "DIGITEVEN" || settings.digitsContract === "DIGITODD"),
+    sequenceStrategyMode: settings.digitsSequenceStrategyMode,
+    sequenceLength: settings.digitsSequenceLength,
+    overUnderSequenceStrategyEnabled: settings.digitsOverUnderSequenceStrategyEnabled && (settings.digitsContract === "DIGITOVER" || settings.digitsContract === "DIGITUNDER"),
+    overUnderSequenceLength: settings.digitsOverUnderSequenceLength,
+    overUnderOverBarrier: settings.digitsOverUnderOverBarrier,
+    overUnderUnderBarrier: settings.digitsOverUnderUnderBarrier,
+    percentageSaturationStrategyEnabled: settings.digitsPercentageSaturationStrategyEnabled && settings.digitsContract === "DIGITDIFF",
+    percentageSaturationThreshold: settings.digitsPercentageSaturationThreshold,
+    percentageAbsenceStrategyEnabled: settings.digitsPercentageAbsenceStrategyEnabled && settings.digitsContract === "DIGITMATCH",
+    percentageAbsenceStreak: settings.digitsPercentageAbsenceStreak,
+    percentageWindow: settings.digitsPercentageWindow,
+    parityBlockDensityEnabled: settings.digitsParityBlockDensityEnabled && (settings.digitsContract === "DIGITEVEN" || settings.digitsContract === "DIGITODD"),
+    parityBlockWindow: settings.digitsParityBlockWindow,
+    parityBlockThreshold: settings.digitsParityBlockThreshold,
+    parityAlternatingEnabled: settings.digitsParityAlternatingEnabled && (settings.digitsContract === "DIGITEVEN" || settings.digitsContract === "DIGITODD"),
+    parityAlternatingLength: settings.digitsParityAlternatingLength,
+    parityAnchorEnabled: settings.digitsParityAnchorEnabled && (settings.digitsContract === "DIGITEVEN" || settings.digitsContract === "DIGITODD"),
+    matchTwinEnabled: settings.digitsMatchTwinEnabled && settings.digitsContract === "DIGITMATCH",
+    matchTwinRestTicks: settings.digitsMatchTwinRestTicks,
+    matchMirrorEnabled: settings.digitsMatchMirrorEnabled && settings.digitsContract === "DIGITMATCH",
+    matchMirrorWindow: settings.digitsMatchMirrorWindow,
+    matchMirrorDominance: settings.digitsMatchMirrorDominance,
+  });
+
+  useRiseFallEngine({
+    symbol: syntheticSymbol,
+    durationTicks: settings.riseFallDurationTicks,
+    contract: settings.riseFallContract,
+    stake: settings.stake,
+    targetProfit: settings.targetProfit,
+    stopLoss: settings.stopLoss,
+    useMartingale: settings.useMartingale,
+    martingaleMultiplier: settings.martingaleMultiplier,
+    maxMartingaleSteps: settings.maxMartingaleSteps,
+    maxConsecutiveLosses: settings.maxConsecutiveLosses,
+    cooldownAfterLoss: settings.cooldownAfterLoss,
+    sequenceEnabled: settings.riseFallSequenceEnabled,
+    sequenceLength: settings.riseFallSequenceLength,
+    blockDensityEnabled: settings.riseFallBlockDensityEnabled,
+    blockWindow: settings.riseFallBlockWindow,
+    blockThreshold: settings.riseFallBlockThreshold,
+    alternatingEnabled: settings.riseFallAlternatingEnabled,
+    alternatingLength: settings.riseFallAlternatingLength,
+    isAuthorized,
+    isBotRunning: riseFallRunning,
+    isBotPaused,
+    balance,
   });
 
   useAccumulatorEngine({
@@ -75,6 +127,7 @@ export const TradingEngineRunner = () => {
     filters: { ...DEFAULT_ACCUMULATOR_FILTERS, ...(accumulator?.filters ?? {}) },
     isAuthorized,
     isBotRunning: accumRunning,
+    isBotPaused,
     balance,
   });
 

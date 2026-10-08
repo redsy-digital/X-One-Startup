@@ -23,6 +23,8 @@ export interface StrategyProfileConfig {
 export interface TickData {
   time: number;
   price: number;
+  /** Deriv precision for this live quote, when supplied by the API. */
+  pipSize?: number;
 }
 
 export interface Candle {

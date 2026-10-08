@@ -3,7 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { motion, AnimatePresence } from "motion/react";
 import {
   Power, Settings2, ArrowUpRight, ArrowDownRight, X, Trophy, AlertTriangle, CircleDot, ChevronLeft, ChevronRight,
-  Activity, Target, WalletCards, Gauge, Repeat2, BarChart3, Clock3
+  Activity, Target, WalletCards, Gauge, Repeat2, BarChart3, Clock3, Pause, Play
 } from "lucide-react";
 import { cn } from "../lib/utils";
 import { NeonCard } from "../components/NeonCard";
@@ -14,11 +14,10 @@ import { Switch } from "../components/ui/switch";
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue
 } from "../components/ui/select";
-import { TradingChart } from "../components/TradingChart";
+import { DigitsMarketChart, type DigitsChartType } from "../components/DigitsMarketChart";
 import { ErrorBoundary } from "../components/ErrorBoundary";
 import { MarketSelectScreen } from "../components/MarketSelectScreen";
 import { ForexDashboardPage } from "./ForexDashboardPage";
-import { SYMBOLS } from "../constants";
 import { logger, LogEntry } from "../lib/logger";
 import { getTradeHistory } from "../lib/storage";
 import { TradeHistory } from "../types";
@@ -30,8 +29,10 @@ import { useSessionStore } from "../store/useSessionStore";
 import { useDigitsStore } from "../digits/store";
 import { SyntheticOperationTabs, NoSyntheticTabs } from "../components/SyntheticOperationTabs";
 import { AccumulatorDashboard } from "../accumulators/Dashboard";
+import { RiseFallDashboard } from "../rise-fall/Dashboard";
 import { useSyntheticTabsStore } from "../synthetic/tabs";
 import { DIGITS_CONTRACTS, digitsContractNeedsDigit, digitsContractLabel, type DigitsContractType, type DigitsTargetMode } from "../digits/types";
+import { extractLastDigitFromTick } from "../digits/digit";
 
 // ── Timer de sessão ───────────────────────────────────────────────────────────
 // Lê sessionStartedAt/sessionFrozenElapsed do useBotStore (global) em vez de
@@ -63,30 +64,83 @@ function useSessionTimer(running: boolean, sessionStartedAt: number | null, froz
 // ── Hook: logs em tempo real ──────────────────────────────────────────────────
 function useLogEntries(max = 500) {
   const [entries, setEntries] = useState<LogEntry[]>(() => logger.getAll().slice(-max));
+  const pendingRef = useRef<LogEntry[]>([]);
+  const flushTimerRef = useRef<number | null>(null);
+
   useEffect(() => {
+    const flush = () => {
+      flushTimerRef.current = null;
+      if (pendingRef.current.length === 0) return;
+      const pending = pendingRef.current;
+      pendingRef.current = [];
+      setEntries(prev => [...prev, ...pending].slice(-max));
+    };
+
+    const scheduleFlush = () => {
+      if (flushTimerRef.current !== null) return;
+      flushTimerRef.current = window.setTimeout(flush, 120);
+    };
+
     const unsub = logger.subscribe((e) => {
-      if (!e) { setEntries([]); return; }
-      setEntries(prev => [...prev.slice(-(max - 1)), e]);
+      if (!e) {
+        pendingRef.current = [];
+        if (flushTimerRef.current !== null) {
+          window.clearTimeout(flushTimerRef.current);
+          flushTimerRef.current = null;
+        }
+        setEntries([]);
+        return;
+      }
+      pendingRef.current.push(e);
+      scheduleFlush();
     });
-    return unsub;
+
+    return () => {
+      unsub();
+      pendingRef.current = [];
+      if (flushTimerRef.current !== null) window.clearTimeout(flushTimerRef.current);
+      flushTimerRef.current = null;
+    };
   }, [max]);
+
   return entries;
 }
 
 // ── Selectores principais Digits ─────────────────────────────────────────────
 // Ficam fora do modal de gestão de banca para evitar o problema de interacção
 // dos Select portalled sobre a camada do modal.
+const DIGITS_GROUPS = [
+  { value: "under_over", label: "Under / Over", options: [
+    { value: "DIGITUNDER", label: "Under" },
+    { value: "DIGITOVER", label: "Over" },
+  ] },
+  { value: "match_diff", label: "Match / Diff", options: [
+    { value: "DIGITMATCH", label: "Match" },
+    { value: "DIGITDIFF", label: "Diff" },
+  ] },
+  { value: "even_odd", label: "Even / Odd", options: [
+    { value: "DIGITEVEN", label: "Par" },
+    { value: "DIGITODD", label: "Ímpar" },
+  ] },
+] as const;
+
+const getDigitsGroup = (contract: DigitsContractType) =>
+  DIGITS_GROUPS.find(group => group.options.some(option => option.value === contract)) ?? DIGITS_GROUPS[0];
+
 const DigitsSelectors = () => {
   const { settings, updateSettings } = useSettingsStore();
-  const { isBotRunning } = useBotStore();
-  const isParityContract = settings.digitsContract === "DIGITEVEN" || settings.digitsContract === "DIGITODD";
+  const { isBotRunning, isBotPaused } = useBotStore();
+  const controlsLocked = isBotRunning && !isBotPaused;
+  const group = getDigitsGroup(settings.digitsContract);
+  const isParityContract = group.value === "even_odd";
+  const isOverUnderContract = group.value === "under_over";
 
   return (
     <NeonCard variant="purple" className="p-4 space-y-3">
       <div className="flex items-center justify-between gap-3">
         <div>
           <p className="text-[9px] text-muted-foreground uppercase font-black tracking-widest">Configuração Digits</p>
-          <p className="text-[11px] font-black text-white mt-1">Entrada determinística · sem previsão</p>
+          <p className="text-[11px] font-black text-white mt-1">Escolhe o tipo de entrada</p>
         </div>
         <CircleDot className="w-4 h-4 text-purple-400" />
       </div>
@@ -95,64 +149,59 @@ const DigitsSelectors = () => {
         <div className="space-y-1">
           <label className="text-[9px] text-muted-foreground uppercase font-black">Contrato</label>
           <Select
-            value={settings.digitsContract}
-            disabled={isBotRunning}
-            onValueChange={(value) => updateSettings({ digitsContract: value as DigitsContractType })}
+            value={group.value}
+            disabled={controlsLocked}
+            onValueChange={(value) => {
+              const next = DIGITS_GROUPS.find(g => g.value === value)!;
+              const nextContract = next.options[0].value as DigitsContractType;
+              updateSettings({
+                digitsContract: nextContract,
+                ...(next.value !== "even_odd" ? { digitsSequenceStrategyEnabled: false } : {}),
+              });
+            }}
           >
-            <SelectTrigger className="w-full bg-black/30 border-white/10 h-9 text-[11px]">
-              <SelectValue />
-            </SelectTrigger>
+            <SelectTrigger className="w-full bg-black/30 border-white/10 h-9 text-[11px]"><span className="flex-1 text-left truncate">{group.label}</span></SelectTrigger>
             <SelectContent className="bg-[#111114] border-white/10 text-white">
-              {DIGITS_CONTRACTS.map((contract) => (
-                <SelectItem key={contract.value} value={contract.value}>
-                  {contract.label}
-                </SelectItem>
-              ))}
+              {DIGITS_GROUPS.map(g => <SelectItem key={g.value} value={g.value}>{g.label}</SelectItem>)}
             </SelectContent>
           </Select>
         </div>
 
-        <div className={cn("space-y-1", isParityContract && "opacity-90")}>
-          <label className="text-[9px] text-muted-foreground uppercase font-black">
-            {isParityContract ? "Paridade" : "Dígito alvo"}
-          </label>
+        <div className="space-y-1">
+          <label className="text-[9px] text-muted-foreground uppercase font-black">Tipo de entrada</label>
           <Select
-            value={isParityContract ? (settings.digitsTargetDigit === 1 ? "odd" : "even") : String(settings.digitsTargetDigit)}
-            disabled={isBotRunning}
-            onValueChange={(value) => {
-              if (isParityContract) {
-                updateSettings({ digitsTargetDigit: value === "odd" ? 1 : 0 });
-              } else {
-                updateSettings({ digitsTargetDigit: value === "random" || value === "follow_up" ? value : Number(value) });
-              }
-            }}
+            value={settings.digitsContract}
+            disabled={controlsLocked}
+            onValueChange={(value) => updateSettings({ digitsContract: value as DigitsContractType })}
           >
-            <SelectTrigger className="w-full bg-black/30 border-white/10 h-9 text-[11px]">
-              <SelectValue />
-            </SelectTrigger>
+            <SelectTrigger className="w-full bg-black/30 border-white/10 h-9 text-[11px]"><span className="flex-1 text-left truncate">{group.options.find(option => option.value === settings.digitsContract)?.label ?? settings.digitsContract}</span></SelectTrigger>
             <SelectContent className="bg-[#111114] border-white/10 text-white">
-              {isParityContract ? (
-                <>
-                  <SelectItem value="even">Par</SelectItem>
-                  <SelectItem value="odd">Ímpar</SelectItem>
-                </>
-              ) : (
-                <>
-                  {Array.from({ length: 10 }, (_, digit) => (
-                    <SelectItem key={digit} value={String(digit)}>{digit}</SelectItem>
-                  ))}
-                  <SelectItem value="random">Random</SelectItem>
-                  <SelectItem value="follow_up">Follow Up</SelectItem>
-                </>
-              )}
+              {group.options.map(option => <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>)}
             </SelectContent>
           </Select>
         </div>
       </div>
 
-      <p className="text-[9px] text-muted-foreground/60">
-        {isParityContract ? "Escolhe se o último dígito deve ser par ou ímpar." : "Escolhe um dígito, Random para variar o alvo ou Follow Up para usar o último dígito do contrato anterior."}
-      </p>
+      <div className={cn("space-y-1", isParityContract && "opacity-45")}>
+        <label className="text-[9px] text-muted-foreground uppercase font-black">Dígito alvo</label>
+        <Select
+          value={isParityContract ? "disabled" : String(settings.digitsTargetDigit)}
+          disabled={isBotRunning || isParityContract}
+          onValueChange={(value) => updateSettings({ digitsTargetDigit: value === "random" || value === "follow_up" ? value : Number(value) })}
+        >
+          <SelectTrigger className="w-full bg-black/30 border-white/10 h-9 text-[11px]"><SelectValue /></SelectTrigger>
+          <SelectContent className="bg-[#111114] border-white/10 text-white">
+            {!isParityContract && <>
+              {Array.from({ length: 10 }, (_, digit) => <SelectItem key={digit} value={String(digit)}>{digit}</SelectItem>)}
+              <SelectItem value="random">Random</SelectItem>
+              <SelectItem value="follow_up">Follow Up</SelectItem>
+            </>}
+          </SelectContent>
+        </Select>
+        <p className="text-[9px] text-muted-foreground/60">
+          {isParityContract ? "Inativo para Even/Odd: a entrada é definida no selector acima." : "Escolhe o dígito alvo, Random ou Follow Up."}
+        </p>
+      </div>
     </NeonCard>
   );
 };
@@ -169,11 +218,8 @@ const digitsTargetText = (contract: DigitsContractType | null, target: number | 
   return target == null ? digitsContractLabel(contract, "random") : digitsContractLabel(contract, target);
 };
 
-const getLastTickDigit = (price: number | null) => {
-  if (price == null || !Number.isFinite(price)) return null;
-  const fixed = price.toFixed(2);
-  const digits = fixed.replace(/\D/g, "");
-  return digits.length ? Number(digits[digits.length - 1]) : null;
+const getLastTickDigit = (tick: { price: number; pipSize?: number } | null) => {
+  return tick ? extractLastDigitFromTick(tick) : null;
 };
 
 const RuntimeMetric = ({ label, value, accent = "text-white" }: { label: string; value: string; accent?: string }) => (
@@ -193,11 +239,13 @@ const StatusPill = ({ label, value, className = "" }: { label: string; value: st
 // ── Text Stepper ─────────────────────────────────────────────────────────────
 // Controles compactos sem portal: ideais para o modal de gestão de banca.
 const TextStepper = ({
-  label, value, disabled, onPrevious, onNext,
+  label, value, disabled, disabledPrevious, disabledNext, onPrevious, onNext,
 }: {
   label: string;
   value: string;
   disabled?: boolean;
+  disabledPrevious?: boolean;
+  disabledNext?: boolean;
   onPrevious: () => void;
   onNext: () => void;
 }) => (
@@ -206,7 +254,7 @@ const TextStepper = ({
     <div className="flex items-center h-8 rounded-lg border border-white/10 bg-black/30 overflow-hidden">
       <button
         type="button"
-        disabled={disabled}
+        disabled={disabled || disabledPrevious}
         onClick={onPrevious}
         aria-label={`${label} anterior`}
         className="h-full w-8 shrink-0 flex items-center justify-center text-muted-foreground hover:text-white hover:bg-white/5 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
@@ -218,7 +266,7 @@ const TextStepper = ({
       </div>
       <button
         type="button"
-        disabled={disabled}
+        disabled={disabled || disabledNext}
         onClick={onNext}
         aria-label={`${label} próximo`}
         className="h-full w-8 shrink-0 flex items-center justify-center text-muted-foreground hover:text-white hover:bg-white/5 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
@@ -352,8 +400,144 @@ const DigitsConfigModal = ({ onClose }: { onClose: () => void }) => {
   );
 };
 
+// ── Modal de Estratégias Digits ─────────────────────────────────────────────
+const DigitsStrategiesModal = ({ onClose }: { onClose: () => void }) => {
+  const { settings: s, updateSettings } = useSettingsStore();
+  const isParityContract = s.digitsContract === "DIGITEVEN" || s.digitsContract === "DIGITODD";
+  const isOverUnderContract = s.digitsContract === "DIGITOVER" || s.digitsContract === "DIGITUNDER";
+  const isDiffersContract = s.digitsContract === "DIGITDIFF";
+  const isMatchContract = s.digitsContract === "DIGITMATCH";
+  if (!isParityContract && !isOverUnderContract && !isDiffersContract && !isMatchContract) return null;
+
+  const disabled = isBotRunningGlobally();
+  const updateLength = (value: number, key: "digitsSequenceLength" | "digitsOverUnderSequenceLength") => {
+    if (!Number.isFinite(value)) return;
+    updateSettings({ [key]: Math.max(1, Math.min(100, Math.round(value))) });
+  };
+  const setBarrier = (key: "digitsOverUnderOverBarrier" | "digitsOverUnderUnderBarrier", value: number) => {
+    const n = Math.max(0, Math.min(9, Math.round(value)));
+    if (key === "digitsOverUnderOverBarrier") {
+      updateSettings({ digitsOverUnderOverBarrier: Math.min(n, s.digitsOverUnderUnderBarrier - 1) });
+    } else {
+      updateSettings({ digitsOverUnderUnderBarrier: Math.max(n, s.digitsOverUnderOverBarrier + 1) });
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-[220] flex items-end sm:items-center justify-center bg-black/80 backdrop-blur-sm p-4">
+      <motion.div initial={{ opacity: 0, y: 40 }} animate={{ opacity: 1, y: 0 }} className="w-full max-w-sm bg-[#111114] border border-purple-500/20 rounded-2xl shadow-2xl overflow-hidden">
+        <div className="flex items-center justify-between px-5 py-4 border-b border-white/5">
+          <p className="font-black text-sm uppercase tracking-widest flex items-center gap-2 text-white"><Target className="w-4 h-4 text-purple-400" /> Estratégias</p>
+          <Button variant="ghost" size="icon" onClick={onClose} className="h-7 w-7 text-muted-foreground"><X className="w-4 h-4" /></Button>
+        </div>
+        <div className="p-5 space-y-4 max-h-[75vh] overflow-y-auto">
+          {isParityContract ? (
+            <>
+              <button type="button" onClick={() => updateSettings({ digitsSequenceStrategyEnabled: !s.digitsSequenceStrategyEnabled })} disabled={disabled} className={cn("w-full rounded-xl border p-3 text-left transition-all", s.digitsSequenceStrategyEnabled ? "border-purple-500/40 bg-purple-500/10" : "border-white/10 bg-white/[0.03]", disabled && "opacity-50 cursor-not-allowed")}>
+                <div className="flex items-center gap-3"><div className={cn("w-5 h-5 rounded-md border flex items-center justify-center", s.digitsSequenceStrategyEnabled ? "border-purple-400 bg-purple-500/20" : "border-white/20 bg-black/20")}>{s.digitsSequenceStrategyEnabled && <span className="text-purple-300 text-[11px] font-black">✓</span>}</div><div><p className="text-[11px] font-black text-white">Sequência Par/Ímpar</p><p className="text-[9px] text-muted-foreground mt-0.5">A entrada é disparada no tick que completa a sequência.</p></div></div>
+              </button>
+              {s.digitsSequenceStrategyEnabled && <div className="space-y-3">
+                <div className="grid grid-cols-2 gap-3">
+                  <TextStepper label="Contrato" value={s.digitsContract === "DIGITEVEN" ? "Par" : "Ímpar"} disabled={disabled} onPrevious={() => updateSettings({ digitsContract: s.digitsContract === "DIGITEVEN" ? "DIGITODD" : "DIGITEVEN" })} onNext={() => updateSettings({ digitsContract: s.digitsContract === "DIGITEVEN" ? "DIGITODD" : "DIGITEVEN" })} />
+                  <TextStepper label="Sequência" value={String(s.digitsSequenceLength)} disabled={disabled} onPrevious={() => updateLength(s.digitsSequenceLength - 1, "digitsSequenceLength")} onNext={() => updateLength(s.digitsSequenceLength + 1, "digitsSequenceLength")} />
+                </div>
+                <TextStepper label="Modo" value={s.digitsSequenceStrategyMode === "multiple" ? "Múltipla" : "Contrato selecionado"} disabled={disabled} onPrevious={() => updateSettings({ digitsSequenceStrategyMode: s.digitsSequenceStrategyMode === "multiple" ? "fixed" : "multiple" })} onNext={() => updateSettings({ digitsSequenceStrategyMode: s.digitsSequenceStrategyMode === "multiple" ? "fixed" : "multiple" })} />
+                <div className="rounded-xl border border-white/10 bg-white/[0.03] p-3 text-[10px] text-white leading-relaxed">{s.digitsSequenceStrategyMode === "multiple" ? <>{s.digitsSequenceLength} pares → <b>Ímpar</b><br />{s.digitsSequenceLength} ímpares → <b>Par</b></> : <>{s.digitsSequenceLength} {s.digitsContract === "DIGITEVEN" ? "ímpares" : "pares"} → <b>{s.digitsContract === "DIGITEVEN" ? "Par" : "Ímpar"}</b></>}</div>
+              </div>}
+
+              <button type="button" onClick={() => updateSettings({ digitsParityBlockDensityEnabled: !s.digitsParityBlockDensityEnabled })} disabled={disabled} className={cn("w-full rounded-xl border p-3 text-left transition-all", s.digitsParityBlockDensityEnabled ? "border-purple-500/40 bg-purple-500/10" : "border-white/10 bg-white/[0.03]", disabled && "opacity-50 cursor-not-allowed")}>
+                <div className="flex items-center gap-3"><div className={cn("w-5 h-5 rounded-md border flex items-center justify-center", s.digitsParityBlockDensityEnabled ? "border-purple-400 bg-purple-500/20" : "border-white/20 bg-black/20")}>{s.digitsParityBlockDensityEnabled && <span className="text-purple-300 text-[11px] font-black">✓</span>}</div><div><p className="text-[11px] font-black text-white">Densidade de Bloco</p><p className="text-[9px] text-muted-foreground mt-0.5">Analisa a proporção Par/Ímpar numa janela curta e sinaliza a paridade minoritária.</p></div></div>
+              </button>
+              {s.digitsParityBlockDensityEnabled && <div className="space-y-3">
+                <div className="grid grid-cols-2 gap-3">
+                  <TextStepper label="Janela" value={`${s.digitsParityBlockWindow} ticks`} disabled={disabled} disabledPrevious={s.digitsParityBlockWindow <= 2} disabledNext={s.digitsParityBlockWindow >= 100} onPrevious={() => updateSettings({ digitsParityBlockWindow: Math.max(2, s.digitsParityBlockWindow - 1) })} onNext={() => updateSettings({ digitsParityBlockWindow: Math.min(100, s.digitsParityBlockWindow + 1) })} />
+                  <TextStepper label="Limiar" value={`${s.digitsParityBlockThreshold.toFixed(0)}%`} disabled={disabled} disabledPrevious={s.digitsParityBlockThreshold <= 50} disabledNext={s.digitsParityBlockThreshold >= 100} onPrevious={() => updateSettings({ digitsParityBlockThreshold: Math.max(50, s.digitsParityBlockThreshold - 1) })} onNext={() => updateSettings({ digitsParityBlockThreshold: Math.min(100, s.digitsParityBlockThreshold + 1) })} />
+                </div>
+                <div className="rounded-xl border border-white/10 bg-white/[0.03] p-3 text-[9px] text-muted-foreground leading-relaxed">Padrão: <b className="text-white">10 ticks / 80%</b>. Ex.: 8 ímpares + 2 pares → entrada Par. É um filtro de desequilíbrio observado, não uma garantia de compensação no tick seguinte.</div>
+              </div>}
+
+              <button type="button" onClick={() => updateSettings({ digitsParityAlternatingEnabled: !s.digitsParityAlternatingEnabled })} disabled={disabled} className={cn("w-full rounded-xl border p-3 text-left transition-all", s.digitsParityAlternatingEnabled ? "border-purple-500/40 bg-purple-500/10" : "border-white/10 bg-white/[0.03]", disabled && "opacity-50 cursor-not-allowed")}>
+                <div className="flex items-center gap-3"><div className={cn("w-5 h-5 rounded-md border flex items-center justify-center", s.digitsParityAlternatingEnabled ? "border-purple-400 bg-purple-500/20" : "border-white/20 bg-black/20")}>{s.digitsParityAlternatingEnabled && <span className="text-purple-300 text-[11px] font-black">✓</span>}</div><div><p className="text-[11px] font-black text-white">Padrão Intermitente</p><p className="text-[9px] text-muted-foreground mt-0.5">Detecta alternância estrita Par/Ímpar e entra repetindo a paridade do último tick.</p></div></div>
+              </button>
+              {s.digitsParityAlternatingEnabled && <div className="space-y-3">
+                <TextStepper label="Alternância" value={`${s.digitsParityAlternatingLength} ticks`} disabled={disabled} disabledPrevious={s.digitsParityAlternatingLength <= 2} disabledNext={s.digitsParityAlternatingLength >= 20} onPrevious={() => updateSettings({ digitsParityAlternatingLength: Math.max(2, s.digitsParityAlternatingLength - 1) })} onNext={() => updateSettings({ digitsParityAlternatingLength: Math.min(20, s.digitsParityAlternatingLength + 1) })} />
+                <div className="rounded-xl border border-white/10 bg-white/[0.03] p-3 text-[9px] text-muted-foreground leading-relaxed">Padrão: <b className="text-white">4 ticks</b>. O trigger ocorre no próprio tick que completa a alternância.</div>
+              </div>}
+
+              <button type="button" onClick={() => updateSettings({ digitsParityAnchorEnabled: !s.digitsParityAnchorEnabled })} disabled={disabled} className={cn("w-full rounded-xl border p-3 text-left transition-all", s.digitsParityAnchorEnabled ? "border-purple-500/40 bg-purple-500/10" : "border-white/10 bg-white/[0.03]", disabled && "opacity-50 cursor-not-allowed")}>
+                <div className="flex items-center gap-3"><div className={cn("w-5 h-5 rounded-md border flex items-center justify-center", s.digitsParityAnchorEnabled ? "border-purple-400 bg-purple-500/20" : "border-white/20 bg-black/20")}>{s.digitsParityAnchorEnabled && <span className="text-purple-300 text-[11px] font-black">✓</span>}</div><div><p className="text-[11px] font-black text-white">Dígito Âncora</p><p className="text-[9px] text-muted-foreground mt-0.5">Usa 0/9 como âncoras e valida os dois ticks anteriores.</p></div></div>
+              </button>
+              {s.digitsParityAnchorEnabled && <div className="rounded-xl border border-white/10 bg-white/[0.03] p-3 text-[9px] text-muted-foreground leading-relaxed">Se sair 0 ou 9 e os dois ticks anteriores tiverem a mesma paridade da âncora, entra na paridade oposta. Histórico misto é ignorado.</div>}
+            </>
+          ) : isOverUnderContract ? (
+            <>
+              <button type="button" onClick={() => updateSettings({ digitsOverUnderSequenceStrategyEnabled: !s.digitsOverUnderSequenceStrategyEnabled })} disabled={disabled} className={cn("w-full rounded-xl border p-3 text-left transition-all", s.digitsOverUnderSequenceStrategyEnabled ? "border-purple-500/40 bg-purple-500/10" : "border-white/10 bg-white/[0.03]", disabled && "opacity-50 cursor-not-allowed")}>
+                <div className="flex items-center gap-3"><div className={cn("w-5 h-5 rounded-md border flex items-center justify-center", s.digitsOverUnderSequenceStrategyEnabled ? "border-purple-400 bg-purple-500/20" : "border-white/20 bg-black/20")}>{s.digitsOverUnderSequenceStrategyEnabled && <span className="text-purple-300 text-[11px] font-black">✓</span>}</div><div><p className="text-[11px] font-black text-white">Sequência Over/Under</p><p className="text-[9px] text-muted-foreground mt-0.5">Alterna o contrato após uma sequência de dígitos do mesmo grupo.</p></div></div>
+              </button>
+              {s.digitsOverUnderSequenceStrategyEnabled && <div className="space-y-3">
+                <div className="rounded-xl border border-purple-500/20 bg-purple-500/5 p-3 text-[9px] text-muted-foreground leading-relaxed">Dígitos ≤ <b className="text-white">Over/barreira baixa</b> formam o grupo baixo. Dígitos ≥ <b className="text-white">Under/barreira alta</b> formam o grupo alto. Valores entre as duas barreiras são neutros e reiniciam a contagem.</div>
+                <TextStepper label="Sequência" value={String(s.digitsOverUnderSequenceLength)} disabled={disabled} onPrevious={() => updateLength(s.digitsOverUnderSequenceLength - 1, "digitsOverUnderSequenceLength")} onNext={() => updateLength(s.digitsOverUnderSequenceLength + 1, "digitsOverUnderSequenceLength")} />
+                <div className="grid grid-cols-2 gap-3">
+                  <TextStepper label="Baixos até" value={String(s.digitsOverUnderOverBarrier)} disabled={disabled} disabledPrevious={s.digitsOverUnderOverBarrier <= 0} disabledNext={s.digitsOverUnderOverBarrier >= s.digitsOverUnderUnderBarrier - 1} onPrevious={() => setBarrier("digitsOverUnderOverBarrier", s.digitsOverUnderOverBarrier - 1)} onNext={() => setBarrier("digitsOverUnderOverBarrier", s.digitsOverUnderOverBarrier + 1)} />
+                  <TextStepper label="Altos desde" value={String(s.digitsOverUnderUnderBarrier)} disabled={disabled} disabledPrevious={s.digitsOverUnderUnderBarrier <= s.digitsOverUnderOverBarrier + 1} disabledNext={s.digitsOverUnderUnderBarrier >= 9} onPrevious={() => setBarrier("digitsOverUnderUnderBarrier", s.digitsOverUnderUnderBarrier - 1)} onNext={() => setBarrier("digitsOverUnderUnderBarrier", s.digitsOverUnderUnderBarrier + 1)} />
+                </div>
+                <div className="rounded-xl border border-white/10 bg-white/[0.03] p-3 space-y-2 text-[10px] text-white leading-relaxed">
+                  <p><b>Alto × {s.digitsOverUnderSequenceLength}</b> → <span className="text-yellow-300">Under {s.digitsOverUnderUnderBarrier}</span></p>
+                  <p><b>Baixo × {s.digitsOverUnderSequenceLength}</b> → <span className="text-green-300">Over {s.digitsOverUnderOverBarrier}</span></p>
+                  <p className="text-[9px] text-muted-foreground">Ex.: 5/6 = baixos 0–5 e altos 6–9. O tick que completa a sequência é o próprio trigger.</p>
+                </div>
+              </div>}
+            </>
+                    ) : isDiffersContract ? (
+            <>
+              <button type="button" onClick={() => updateSettings({ digitsPercentageSaturationStrategyEnabled: !s.digitsPercentageSaturationStrategyEnabled })} disabled={disabled} className={cn("w-full rounded-xl border p-3 text-left transition-all", s.digitsPercentageSaturationStrategyEnabled ? "border-purple-500/40 bg-purple-500/10" : "border-white/10 bg-white/[0.03]", disabled && "opacity-50 cursor-not-allowed")}>
+                <div className="flex items-center gap-3"><div className={cn("w-5 h-5 rounded-md border flex items-center justify-center", s.digitsPercentageSaturationStrategyEnabled ? "border-purple-400 bg-purple-500/20" : "border-white/20 bg-black/20")}>{s.digitsPercentageSaturationStrategyEnabled && <span className="text-purple-300 text-[11px] font-black">✓</span>}</div><div><p className="text-[11px] font-black text-white">Differs por Saturação</p><p className="text-[9px] text-muted-foreground mt-0.5">Usa a janela percentual para detectar um dígito acima do limiar configurado.</p></div></div>
+              </button>
+              {s.digitsPercentageSaturationStrategyEnabled && <div className="space-y-3">
+                <TextStepper label="Limiar de saturação" value={`${s.digitsPercentageSaturationThreshold.toFixed(0)}%`} disabled={disabled} disabledPrevious={s.digitsPercentageSaturationThreshold <= 11} disabledNext={s.digitsPercentageSaturationThreshold >= 100} onPrevious={() => updateSettings({ digitsPercentageSaturationThreshold: Math.max(10.01, s.digitsPercentageSaturationThreshold - 1) })} onNext={() => updateSettings({ digitsPercentageSaturationThreshold: Math.min(100, s.digitsPercentageSaturationThreshold + 1) })} />
+                <div className="rounded-xl border border-white/10 bg-white/[0.03] p-3 text-[9px] text-muted-foreground leading-relaxed">Janela estatística: <b className="text-white">{s.digitsPercentageWindow} ticks</b>. Ex.: com limiar de 18%, um dígito que atingir ≥18% gera sinal para <b className="text-white">Differs</b> contra esse dígito.</div>
+              </div>}
+            </>
+          ) : isMatchContract ? (
+            <>
+              <button type="button" onClick={() => updateSettings({ digitsPercentageAbsenceStrategyEnabled: !s.digitsPercentageAbsenceStrategyEnabled })} disabled={disabled} className={cn("w-full rounded-xl border p-3 text-left transition-all", s.digitsPercentageAbsenceStrategyEnabled ? "border-purple-500/40 bg-purple-500/10" : "border-white/10 bg-white/[0.03]", disabled && "opacity-50 cursor-not-allowed")}>
+                <div className="flex items-center gap-3"><div className={cn("w-5 h-5 rounded-md border flex items-center justify-center", s.digitsPercentageAbsenceStrategyEnabled ? "border-purple-400 bg-purple-500/20" : "border-white/20 bg-black/20")}>{s.digitsPercentageAbsenceStrategyEnabled && <span className="text-purple-300 text-[11px] font-black">✓</span>}</div><div><p className="text-[11px] font-black text-white">Vácuo Estatístico</p><p className="text-[9px] text-muted-foreground mt-0.5">Estratégia auditada: procura um dígito em ausência extrema e dispara um único Match.</p></div></div>
+              </button>
+              {s.digitsPercentageAbsenceStrategyEnabled && <div className="space-y-3">
+                <TextStepper label="Streak de ausência" value={`${s.digitsPercentageAbsenceStreak} ticks`} disabled={disabled} disabledPrevious={s.digitsPercentageAbsenceStreak <= 1} disabledNext={s.digitsPercentageAbsenceStreak >= 10000} onPrevious={() => updateSettings({ digitsPercentageAbsenceStreak: Math.max(1, s.digitsPercentageAbsenceStreak - 1) })} onNext={() => updateSettings({ digitsPercentageAbsenceStreak: Math.min(10000, s.digitsPercentageAbsenceStreak + 1) })} />
+                <div className="rounded-xl border border-white/10 bg-white/[0.03] p-3 text-[9px] text-muted-foreground leading-relaxed">Auditoria: usa o mesmo streakWithoutAppearing da distribuição percentual. É um filtro de ausência extrema, não uma garantia de que o dígito terá de aparecer no próximo tick.</div>
+              </div>}
+
+              <button type="button" onClick={() => updateSettings({ digitsMatchTwinEnabled: !s.digitsMatchTwinEnabled })} disabled={disabled} className={cn("w-full rounded-xl border p-3 text-left transition-all", s.digitsMatchTwinEnabled ? "border-purple-500/40 bg-purple-500/10" : "border-white/10 bg-white/[0.03]", disabled && "opacity-50 cursor-not-allowed")}>
+                <div className="flex items-center gap-3"><div className={cn("w-5 h-5 rounded-md border flex items-center justify-center", s.digitsMatchTwinEnabled ? "border-purple-400 bg-purple-500/20" : "border-white/20 bg-black/20")}>{s.digitsMatchTwinEnabled && <span className="text-purple-300 text-[11px] font-black">✓</span>}</div><div><p className="text-[11px] font-black text-white">Twin-Splitting</p><p className="text-[9px] text-muted-foreground mt-0.5">Após um dígito gémeo X,X, descansa N ticks e faz Match em X no tick seguinte.</p></div></div>
+              </button>
+              {s.digitsMatchTwinEnabled && <div className="space-y-3">
+                <TextStepper label="Descanso" value={`${s.digitsMatchTwinRestTicks} ticks`} disabled={disabled} disabledPrevious={s.digitsMatchTwinRestTicks <= 0} disabledNext={s.digitsMatchTwinRestTicks >= 20} onPrevious={() => updateSettings({ digitsMatchTwinRestTicks: Math.max(0, s.digitsMatchTwinRestTicks - 1) })} onNext={() => updateSettings({ digitsMatchTwinRestTicks: Math.min(20, s.digitsMatchTwinRestTicks + 1) })} />
+                <div className="rounded-xl border border-white/10 bg-white/[0.03] p-3 text-[9px] text-muted-foreground leading-relaxed">Padrão: <b className="text-white">3 ticks de descanso</b>. Ex.: 4,4 → aguarda 3 ticks → Match 4 no 4.º tick posterior.</div>
+              </div>}
+
+              <button type="button" onClick={() => updateSettings({ digitsMatchMirrorEnabled: !s.digitsMatchMirrorEnabled })} disabled={disabled} className={cn("w-full rounded-xl border p-3 text-left transition-all", s.digitsMatchMirrorEnabled ? "border-purple-500/40 bg-purple-500/10" : "border-white/10 bg-white/[0.03]", disabled && "opacity-50 cursor-not-allowed")}>
+                <div className="flex items-center gap-3"><div className={cn("w-5 h-5 rounded-md border flex items-center justify-center", s.digitsMatchMirrorEnabled ? "border-purple-400 bg-purple-500/20" : "border-white/20 bg-black/20")}>{s.digitsMatchMirrorEnabled && <span className="text-purple-300 text-[11px] font-black">✓</span>}</div><div><p className="text-[11px] font-black text-white">Simetria Espelho</p><p className="text-[9px] text-muted-foreground mt-0.5">Procura um quadrante totalmente seco e concentra os outros quadrantes antes de escolher o representante central.</p></div></div>
+              </button>
+              {s.digitsMatchMirrorEnabled && <div className="space-y-3">
+                <div className="grid grid-cols-2 gap-3">
+                  <TextStepper label="Janela" value={`${s.digitsMatchMirrorWindow} ticks`} disabled={disabled} disabledPrevious={s.digitsMatchMirrorWindow <= 4} disabledNext={s.digitsMatchMirrorWindow >= 100} onPrevious={() => updateSettings({ digitsMatchMirrorWindow: Math.max(4, s.digitsMatchMirrorWindow - 1) })} onNext={() => updateSettings({ digitsMatchMirrorWindow: Math.min(100, s.digitsMatchMirrorWindow + 1) })} />
+                  <TextStepper label="Domínio" value={`${s.digitsMatchMirrorDominance.toFixed(0)}%`} disabled={disabled} disabledPrevious={s.digitsMatchMirrorDominance <= 50} disabledNext={s.digitsMatchMirrorDominance >= 100} onPrevious={() => updateSettings({ digitsMatchMirrorDominance: Math.max(50, s.digitsMatchMirrorDominance - 1) })} onNext={() => updateSettings({ digitsMatchMirrorDominance: Math.min(100, s.digitsMatchMirrorDominance + 1) })} />
+                </div>
+                <div className="rounded-xl border border-white/10 bg-white/[0.03] p-3 text-[9px] text-muted-foreground leading-relaxed">Padrão: <b className="text-white">15 ticks / 80%</b>. Ex.: se o quadrante Ímpar/Baixo (1,3) estiver seco, o alvo é <b className="text-white">3</b>. O filtro exige concentração observada nos dois maiores quadrantes.</div>
+              </div>}
+            </>
+          ) : null}
+        </div>
+        <div className="px-5 pb-5"><Button onClick={onClose} className="w-full bg-purple-600 hover:bg-purple-700 font-black uppercase h-10">Guardar e Fechar</Button></div>
+      </motion.div>
+    </div>
+  );
+};
+
 function isBotRunningGlobally() {
-  return useBotStore.getState().isBotRunning;
+  const state = useBotStore.getState();
+  return state.isBotRunning && !state.isBotPaused;
 }
 
 // ── Modal resultado (SL/TP) ───────────────────────────────────────────────────
@@ -385,17 +569,36 @@ const ResultModal = ({ type, amount, onClose }: { type: "profit" | "loss"; amoun
 export const DashboardPage = () => {
   const navigate = useNavigate();
   const { isAuthorized, activeAccount } = useConnectionStore();
-  const { isBotRunning, setIsBotRunning, lossCooldown, sessionStartedAt, sessionFrozenElapsed } = useBotStore();
-  const { market, setMarket, symbol, setSymbol, candles, ticks, timeframe, setTimeframe } = useMarketStore();
-  const { tabs, activeTabId, runningTabId, setRunningTabId } = useSyntheticTabsStore();
+  const { isBotRunning, isBotPaused, setIsBotRunning, pauseBot, resumeBot, lossCooldown, sessionStartedAt, sessionFrozenElapsed } = useBotStore();
+  const { market, setMarket, symbol, setSymbol, candles, ticks, historicalTicksLoading, historicalTicksError, timeframe, setTimeframe } = useMarketStore();
+  const { tabs, activeTabId, runningTabId, setRunningTabId, setTabSymbol } = useSyntheticTabsStore();
   const activeSyntheticTab = tabs.find(tab => tab.id === activeTabId) ?? null;
-  const { settings } = useSettingsStore();
+  const { settings, updateSettings } = useSettingsStore();
+
+  // Em Digits, cada vela representa exactamente a duração configurada para
+  // a entrada. A regra é visual/temporal e não depende do bot estar ligado.
+  useEffect(() => {
+    if (market !== "synthetic" || !activeSyntheticTab) return;
+    const desired = activeSyntheticTab.kind === "digits"
+      ? settings.contractDurationTicks
+      : activeSyntheticTab.kind === "rise_fall"
+        ? settings.riseFallDurationTicks
+        : timeframe;
+    if (activeSyntheticTab.kind !== "accumulators" && timeframe !== desired) setTimeframe(desired);
+  }, [market, activeSyntheticTab?.kind, timeframe, settings.contractDurationTicks, settings.riseFallDurationTicks, setTimeframe]);
+
+  useEffect(() => {
+    if (activeSyntheticTab?.kind === "digits" && settings.digitsSymbol && activeSyntheticTab.symbol !== settings.digitsSymbol) {
+      setTabSymbol(activeSyntheticTab.id, settings.digitsSymbol);
+    }
+  }, [activeSyntheticTab?.id, activeSyntheticTab?.kind, activeSyntheticTab?.symbol, settings.digitsSymbol, setTabSymbol]);
   const { runtime: digitsRuntime } = useDigitsStore();
   const { wins, losses, consecutiveLosses, pnl: rawPnl, modal, closeModal } = useSessionStore();
   const pnl = Number(rawPnl) || 0;
   const logEntries = useLogEntries(60);
   const timer = useSessionTimer(isBotRunning, sessionStartedAt, sessionFrozenElapsed);
   const [showDigitsConfig, setShowDigitsConfig] = useState(false);
+  const [showDigitsStrategies, setShowDigitsStrategies] = useState(false);
   const [nowTick, setNowTick] = useState(() => Date.now());
   useEffect(() => {
     if (!lossCooldown) return;
@@ -418,12 +621,19 @@ export const DashboardPage = () => {
     return () => window.removeEventListener("trade_history_updated", handler);
   }, []);
 
-  // Auto-scroll logs
+  // Scroll interno do feed de logs. Só acompanha o fim enquanto o utilizador
+  // estiver no fim; se ele subir para inspecionar ticks antigos, novos logs não
+  // roubam a posição.
   const logsContainerRef = useRef<HTMLDivElement>(null);
+  const logsAtBottomRef = useRef(true);
+  const handleLogsScroll = () => {
+    const el = logsContainerRef.current;
+    if (!el) return;
+    logsAtBottomRef.current = el.scrollTop + el.clientHeight >= el.scrollHeight - 24;
+  };
   useEffect(() => {
-    if (logsContainerRef.current) {
-      logsContainerRef.current.scrollTop = logsContainerRef.current.scrollHeight;
-    }
+    const el = logsContainerRef.current;
+    if (el && logsAtBottomRef.current) el.scrollTop = el.scrollHeight;
   }, [logEntries.length]);
 
   // A aba activa controla apenas o painel/feed visual. O motor em execução usa runningTabId,
@@ -439,14 +649,21 @@ export const DashboardPage = () => {
     if (!isAuthorized && !activeAccount) navigate("/");
   }, [isAuthorized, activeAccount]);
 
-  const currentPrice = ticks.length > 0 ? ticks[ticks.length - 1].price : null;
+  const currentTick = ticks.length > 0 ? ticks[ticks.length - 1] : null;
+  const currentPrice = currentTick?.price ?? null;
   const prevPrice = ticks.length > 1 ? ticks[ticks.length - 2].price : null;
   const isUp = currentPrice && prevPrice ? currentPrice >= prevPrice : true;
+  const isParityContract = settings.digitsContract === "DIGITEVEN" || settings.digitsContract === "DIGITODD";
+  const isOverUnderContract = settings.digitsContract === "DIGITOVER" || settings.digitsContract === "DIGITUNDER";
+  const isDiffersContract = settings.digitsContract === "DIGITDIFF";
+  const isMatchContract = settings.digitsContract === "DIGITMATCH";
+  const hasDigitsStrategyContract = isParityContract || isOverUnderContract || isDiffersContract || isMatchContract;
+  useEffect(() => { if (!hasDigitsStrategyContract) setShowDigitsStrategies(false); }, [hasDigitsStrategyContract]);
   const winRate = wins + losses > 0 ? Math.round((wins / (wins + losses)) * 100) : 0;
 
   const logColors: Record<string, string> = {
     system: "text-blue-400", signal: "text-purple-300", block: "text-amber-400",
-    trade: "text-emerald-400", risk: "text-orange-400", error: "text-red-400"
+    trade: "text-emerald-400", risk: "text-orange-400", error: "text-red-400", telemetry: "text-cyan-300"
   };
 
   // Fase 1 do plano multi-mercado — ver forex_ux_architecture.md.
@@ -458,6 +675,15 @@ export const DashboardPage = () => {
   if (market === "forex") return <ForexDashboardPage />;
   if (!activeSyntheticTab) return <NoSyntheticTabs />;
   if (activeSyntheticTab.kind === "accumulators") return <AccumulatorDashboard tab={activeSyntheticTab} />;
+  if (activeSyntheticTab.kind === "rise_fall") return (
+    <>
+      <div className="flex justify-end mb-2">
+        <button onClick={() => !isBotRunning && setMarket(null)} disabled={isBotRunning} className="text-[9px] font-black uppercase tracking-wide text-muted-foreground/60 hover:text-emerald-400 disabled:opacity-30 disabled:cursor-not-allowed transition-colors">⇄ Trocar mercado</button>
+      </div>
+      <SyntheticOperationTabs />
+      <RiseFallDashboard tab={activeSyntheticTab} />
+    </>
+  );
 
   return (
     <>
@@ -477,7 +703,7 @@ export const DashboardPage = () => {
       <SyntheticOperationTabs />
 
       {/* Fix 1: Layout 2 colunas desktop — usa grid com larguras fixas */}
-      <div className="grid grid-cols-1 lg:grid-cols-[300px_1fr] gap-4">
+      <div className="grid grid-cols-1 lg:grid-cols-[300px_1fr] gap-4 min-h-0">
 
         {/* ══ COLUNA ESQUERDA ══════════════════════════════════════════════ */}
         <div className="flex flex-col gap-3">
@@ -492,7 +718,7 @@ export const DashboardPage = () => {
                 <Clock3 className="w-4 h-4 text-purple-400" />
                 <p className="text-[9px] text-muted-foreground uppercase font-black tracking-widest">Sessão Digits</p>
               </div>
-              <Badge className={cn(isBotRunning ? "bg-green-500/10 text-green-300 border-green-500/20" : "bg-white/5 text-muted-foreground border-white/10")}>{isBotRunning ? "OPERANDO" : "PARADO"}</Badge>
+              <Badge className={cn(isBotRunning ? "bg-green-500/10 text-green-300 border-green-500/20" : "bg-white/5 text-muted-foreground border-white/10")}>{isBotPaused ? "PAUSADO" : isBotRunning ? "OPERANDO" : "PARADO"}</Badge>
             </div>
             <div className="flex items-center justify-center">
               <div className="px-4 py-2 bg-black/50 border border-purple-500/30 rounded-xl">
@@ -516,7 +742,7 @@ export const DashboardPage = () => {
             </div>
             <div className="grid grid-cols-2 gap-2">
               <StatusPill label="Contrato" value={digitsContractLabel(settings.digitsContract, settings.digitsTargetDigit)} />
-              <StatusPill label="Duração" value="1 tick" />
+              <StatusPill label="Duração" value={`${settings.contractDurationTicks} ${settings.contractDurationTicks === 1 ? "tick" : "ticks"}`} />
               <StatusPill label="Modo de entrada" value={digitModeLabel(settings.digitsTargetDigit)} />
               <StatusPill label="Próxima stake" value={`$${(digitsRuntime.nextStake ?? digitsRuntime.currentStake ?? settings.stake).toFixed(2)}`} />
             </div>
@@ -545,7 +771,7 @@ export const DashboardPage = () => {
             <div className="grid grid-cols-2 gap-2">
               <StatusPill label="Entrada atual" value={digitsTargetText(digitsRuntime.currentContract, digitsRuntime.currentTargetDigit)} />
               <StatusPill label="Stake na entrada" value={digitsRuntime.currentStakeInTrade != null ? `$${digitsRuntime.currentStakeInTrade.toFixed(2)}` : "—"} />
-              <StatusPill label="Último dígito do tick" value={getLastTickDigit(currentPrice) == null ? "—" : String(getLastTickDigit(currentPrice))} />
+              <StatusPill label="Último dígito do tick" value={getLastTickDigit(currentTick) == null ? "—" : String(getLastTickDigit(currentTick))} />
               <StatusPill label="Contrato ativo" value={digitsRuntime.activeContractId ?? "—"} />
             </div>
             {digitsRuntime.error && <p className="text-[9px] text-red-400 font-bold leading-relaxed">{digitsRuntime.error}</p>}
@@ -612,11 +838,20 @@ export const DashboardPage = () => {
           </NeonCard>
 
           {/* Configuração e controlo */}
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
             <Button variant="outline" onClick={() => setShowDigitsConfig(true)}
               className="h-14 border-purple-500/40 text-purple-400 hover:bg-purple-500/10 gap-2 font-black uppercase text-[11px]">
               <Settings2 className="w-4 h-4" /> Gestão
             </Button>
+            {hasDigitsStrategyContract && (
+              <Button
+                variant="outline"
+                onClick={() => setShowDigitsStrategies(true)}
+                className={cn("h-14 border-purple-500/40 text-purple-400 hover:bg-purple-500/10 gap-2 font-black uppercase text-[11px]", (settings.digitsSequenceStrategyEnabled || settings.digitsOverUnderSequenceStrategyEnabled || settings.digitsPercentageSaturationStrategyEnabled || settings.digitsPercentageAbsenceStrategyEnabled || settings.digitsMatchTwinEnabled || settings.digitsMatchMirrorEnabled) && "bg-purple-500/10 border-purple-400/60")}
+              >
+                <Target className="w-4 h-4" /> Estratégias
+              </Button>
+            )}
             <button onClick={() => {
               if (isBotRunning) { setIsBotRunning(false); setRunningTabId(null); }
               else { setRunningTabId(activeSyntheticTab.id); setIsBotRunning(true); }
@@ -626,6 +861,13 @@ export const DashboardPage = () => {
               <Power className={cn("w-5 h-5", isBotRunning && "animate-pulse")} />
               {isBotRunning && runningTabId === activeSyntheticTab.id ? "Stop" : "Start"}
             </button>
+            {isBotRunning && runningTabId === activeSyntheticTab.id && (
+              <button type="button" onClick={() => isBotPaused ? resumeBot() : pauseBot()}
+                className={cn("h-14 rounded-xl border-2 font-black uppercase text-[11px] flex items-center justify-center gap-2 transition-all", isBotPaused ? "border-green-500/40 bg-green-500/5 text-green-400 hover:bg-green-500/15" : "border-amber-500/40 bg-amber-500/5 text-amber-300 hover:bg-amber-500/15")}>
+                {isBotPaused ? <Play className="w-5 h-5" /> : <Pause className="w-5 h-5" />}
+                {isBotPaused ? "Continuar" : "Pausar"}
+              </button>
+            )}
           </div>
 
           {showCooldownBanner && (
@@ -637,7 +879,7 @@ export const DashboardPage = () => {
         </div>
 
         {/* ══ COLUNA DIREITA ══════════════════════════════════════════════ */}
-        <div className="flex flex-col gap-3 min-w-0">
+        <div className="flex flex-col gap-3 min-w-0 min-h-0">
 
           {/* Preço + Selectores + Gráfico */}
           <NeonCard variant="purple" className="p-4">
@@ -649,38 +891,47 @@ export const DashboardPage = () => {
                 </span>
                 <Badge className="bg-purple-500/20 text-purple-400 border-purple-500/40 text-[8px]">LIVE</Badge>
               </div>
-              <div className="flex gap-2">
-                <Select value={symbol} onValueChange={setSymbol}>
-                  <SelectTrigger className="bg-black/20 border-white/10 h-8 text-[11px] w-[140px] md:w-[180px]"><SelectValue /></SelectTrigger>
-                  <SelectContent className="bg-[#111114] border-white/10 text-white">
-                    {SYMBOLS.map(s => <SelectItem key={s.value} value={s.value}>{s.label}</SelectItem>)}
-                  </SelectContent>
-                </Select>
-                <Select value={String(timeframe)} onValueChange={v => setTimeframe(Number(v))}>
-                  <SelectTrigger className="bg-black/20 border-white/10 h-8 text-[11px] w-16"><SelectValue /></SelectTrigger>
-                  <SelectContent className="bg-[#111114] border-white/10 text-white">
-                    <SelectItem value="1">1s</SelectItem>
-                    <SelectItem value="3">3s</SelectItem>
-                    <SelectItem value="5">5s</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
             </div>
             <ErrorBoundary fallbackLabel="Erro no Gráfico">
-              <TradingChart candles={candles} symbol={symbol} />
+              <DigitsMarketChart
+                ticks={ticks}
+                candles={candles}
+                symbol={symbol}
+                chartType={settings.digitsChartType}
+                durationTicks={settings.contractDurationTicks}
+                percentageWindow={settings.digitsPercentageWindow}
+                historyLoading={historicalTicksLoading}
+                historyError={historicalTicksError}
+                disabled={isBotRunning && !isBotPaused}
+                onSettingsChange={({ chartType, symbol: nextSymbol, durationTicks, percentageWindow }) => {
+                  updateSettings({ digitsChartType: chartType as DigitsChartType, digitsSymbol: nextSymbol, contractDurationTicks: durationTicks, digitsPercentageWindow: percentageWindow });
+
+                  // Fechar o menu sem trocar o ativo não pode limpar os 1.000
+                  // ticks históricos. Só reinicializamos o feed quando o ativo
+                  // realmente mudou. A duração apenas reagruppa os ticks já
+                  // existentes em novas velas.
+                  if (nextSymbol !== symbol) {
+                    setTabSymbol(activeSyntheticTab.id, nextSymbol);
+                    setSymbol(nextSymbol);
+                  }
+                  if (durationTicks !== timeframe) {
+                    setTimeframe(durationTicks);
+                  }
+                }}
+              />
             </ErrorBoundary>
           </NeonCard>
 
           {/* Fix 4: Histórico (2) + Logs (3) com scroll interno real */}
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3 min-h-0">
 
             {/* Histórico — Fix 3 + Fix 4 */}
-            <NeonCard variant="blue" className="p-4 flex flex-col" style={{ height: "280px" }}>
+            <NeonCard variant="blue" className="p-4 flex flex-col min-h-0" style={{ height: "280px" }}>
               <p className="text-[9px] text-muted-foreground uppercase font-black tracking-widest mb-2 shrink-0">
                 Atividade em Tempo Real
               </p>
-              <div className="flex-1 overflow-y-auto space-y-1.5 pr-0.5"
-                style={{ scrollbarWidth: "thin", scrollbarColor: "rgba(59,130,246,0.3) transparent", overscrollBehavior: "contain" }}>
+              <div className="flex-1 min-h-0 overflow-y-auto space-y-1.5 pr-0.5"
+                style={{ scrollbarWidth: "thin", scrollbarColor: "rgba(59,130,246,0.3) transparent", overscrollBehavior: "contain", touchAction: "pan-y", WebkitOverflowScrolling: "touch" }}>
                 <AnimatePresence initial={false}>
                   {localHistory.length === 0 ? (
                     <div className="flex items-center justify-center h-full opacity-20">
@@ -720,14 +971,15 @@ export const DashboardPage = () => {
             </NeonCard>
 
             {/* Logs — Fix 4 */}
-            <NeonCard variant="purple" className="p-4 flex flex-col" style={{ height: "280px" }}>
+            <NeonCard variant="purple" className="p-4 flex flex-col min-h-0" style={{ height: "280px" }}>
               <p className="text-[9px] text-muted-foreground uppercase font-black tracking-widest mb-2 shrink-0">
                 Logs em Tempo Real
               </p>
               <div
                 ref={logsContainerRef}
-                className="flex-1 overflow-y-auto font-mono"
-                style={{ scrollbarWidth: "thin", scrollbarColor: "rgba(124,58,237,0.3) transparent", overscrollBehavior: "contain" }}>
+                onScroll={handleLogsScroll}
+                className="flex-1 min-h-0 overflow-y-auto font-mono"
+                style={{ scrollbarWidth: "thin", scrollbarColor: "rgba(124,58,237,0.3) transparent", overscrollBehavior: "contain", touchAction: "pan-y", WebkitOverflowScrolling: "touch" }}>
                 {logEntries.length === 0 ? (
                   <div className="flex items-center justify-center h-full opacity-20">
                     <p className="text-[10px] uppercase font-bold text-muted-foreground">Sem logs</p>
@@ -759,6 +1011,7 @@ export const DashboardPage = () => {
       {/* Modal Acertos */}
       <AnimatePresence>
         {showDigitsConfig && <DigitsConfigModal onClose={() => setShowDigitsConfig(false)} />}
+        {showDigitsStrategies && <DigitsStrategiesModal onClose={() => setShowDigitsStrategies(false)} />}
       </AnimatePresence>
     </>
   );

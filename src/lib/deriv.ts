@@ -59,6 +59,7 @@ export class DerivService {
   private socket: WebSocket | null = null;
   private appId: string;
   private pat: string | null = null;
+  private authMode: "pat" | "oauth" = "pat";
   private activeAccountId: string | null = null;
   private isDemo: boolean = true;
   private accountCurrency: string = "USD";
@@ -92,6 +93,13 @@ export class DerivService {
 
   setToken(token: string, isDemo: boolean = true) {
     this.pat = token;
+    this.authMode = "pat";
+    this.isDemo = isDemo;
+  }
+
+  setOAuthToken(token: string, isDemo: boolean = true) {
+    this.pat = token;
+    this.authMode = "oauth";
     this.isDemo = isDemo;
   }
 
@@ -407,6 +415,46 @@ export class DerivService {
    * Digits V1 proposal. One fixed 1-tick contract is requested and the
    * configured digit is sent as the barrier for the contracts that need it.
    */
+  /**
+   * Reconsulta o estado de um contrato Digits já comprado.
+   *
+   * A subscrição `proposal_open_contract` é o caminho normal, mas o motor
+   * precisa de uma via de reconciliação caso uma actualização `is_sold` seja
+   * perdida durante uma pequena falha/race do WebSocket.
+   */
+  async getOpenContract(contractId: string) {
+    if (!contractId) throw new Error("Contract ID ausente para reconciliação.");
+    const data = await this.request<any>({
+      proposal_open_contract: 1,
+      contract_id: contractId,
+    }, "proposal_open_contract", 8000);
+    if (data.error) throw new Error(data.error.message || "Erro em proposal_open_contract");
+    return data.proposal_open_contract ?? null;
+  }
+
+  async getRiseFallProposal(
+    symbol: string,
+    contractType: "CALL" | "PUT",
+    amount: number,
+    duration = 1
+  ) {
+    if (!symbol) throw new Error("Símbolo Rise/Fall ausente.");
+    if (!Number.isFinite(amount) || amount <= 0) throw new Error("Stake Rise/Fall inválida.");
+    const data = await this.request<any>({
+      proposal: 1,
+      amount,
+      basis: "stake",
+      contract_type: contractType,
+      currency: this.accountCurrency,
+      duration: Math.max(1, Math.floor(duration)),
+      duration_unit: "t",
+      underlying_symbol: symbol,
+    }, "proposal", 15000);
+    if (data.error) throw new Error(data.error.message || "Erro em proposal Rise/Fall");
+    if (!data.proposal?.id) throw new Error("Proposal Rise/Fall sem ID.");
+    return data.proposal;
+  }
+
   async getDigitsProposal(
     symbol: string,
     contractType: DigitsContractType,
@@ -617,12 +665,12 @@ export class DerivService {
   async fetchAccounts(): Promise<any[]> {
     if (!this.pat) throw new Error("[Deriv] No PAT set");
 
-    const res = await fetch(`${DERIV_REST_BASE}/trading/v1/options/accounts`, {
-      headers: {
-        Authorization: `Bearer ${this.pat}`,
-        "Deriv-App-ID": this.appId,
-      },
-    });
+    const headers: Record<string, string> = {
+      Authorization: `Bearer ${this.pat}`,
+    };
+    if (this.authMode === "pat") headers["Deriv-App-ID"] = this.appId;
+
+    const res = await fetch(`${DERIV_REST_BASE}/trading/v1/options/accounts`, { headers });
 
     if (!res.ok) {
       if (res.status === 401 || res.status === 403) {
@@ -703,7 +751,7 @@ export class DerivService {
         method: "POST",
         headers: {
           Authorization: `Bearer ${this.pat}`,
-          "Deriv-App-ID": this.appId,
+          ...(this.authMode === "pat" ? { "Deriv-App-ID": this.appId } : {}),
         },
       }
     );
@@ -728,6 +776,7 @@ export class DerivService {
     this.socket.onopen = async () => {
       if (epoch !== this._epoch) return;
       console.log(`[Deriv] Connected (epoch ${epoch})`);
+      this._emit("ws_connected", { epoch, accountId });
       this.reconnectAttempts = 0;
       this.lastMessageAt = Date.now();
       this._startHeartbeat(epoch);
@@ -759,9 +808,11 @@ export class DerivService {
 
     this.socket.onmessage = (event) => {
       if (epoch !== this._epoch) return;
-      this.lastMessageAt = Date.now();
+      const socketReceivedAt = Date.now();
+      this.lastMessageAt = socketReceivedAt;
       try {
         const data = JSON.parse(event.data) as DerivMessage;
+        const parsedAt = Date.now();
         if (data.msg_type === "ping" && data.req_id !== undefined) {
           this.lastPongAt = Date.now();
           this.heartbeatInFlight = false;
@@ -779,6 +830,22 @@ export class DerivService {
           }
         }
         if (data.msg_type) this._emit(data.msg_type, data);
+        if (data.msg_type === "tick") {
+          // Keep the normal `tick` event untouched for the rest of the app,
+          // but expose transport timing to the Digits engine for diagnostics.
+          // `socketReceivedAt` is the local timestamp as soon as the browser
+          // receives the WebSocket message; `parsedAt` is immediately after
+          // JSON.parse. This lets us separate network delivery from engine
+          // processing without changing trading payloads.
+          this._emit("tick_telemetry", {
+            ...data,
+            _xoneTransport: {
+              socketReceivedAt,
+              parsedAt,
+              parseMs: Math.max(0, parsedAt - socketReceivedAt),
+            },
+          });
+        }
       } catch (e) {
         console.error("[Deriv] Parse error:", e);
         if (this._debugLogAll) logger.error(`[Debug] Falha ao interpretar mensagem recebida: ${e}`);
@@ -796,6 +863,7 @@ export class DerivService {
       this._rejectPendingRequests(`WebSocket Deriv desconectado (code ${event.code}).`);
       this.heartbeatInFlight = false;
       console.log(`[Deriv] Closed (code ${event.code}, epoch ${epoch})`);
+      this._emit("ws_disconnected", { code: event.code, reason: event.reason || "", epoch });
       if (!this.isIntentionallyDisconnected) {
         logger.system(`WebSocket desconectado (code ${event.code}) — a reconectar...`);
         this._scheduleReconnect(epoch);

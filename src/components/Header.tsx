@@ -8,7 +8,7 @@ import { logger } from "../lib/logger";
 
 // Zero props — lê das stores
 export const Header = () => {
-  const { balance, isDemo, setIsDemo } = useConnectionStore();
+  const { balance, isDemo, setIsDemo, isAuthorized } = useConnectionStore();
   const { isBotRunning } = useBotStore();
   const navigate = useNavigate();
 
@@ -33,17 +33,17 @@ export const Header = () => {
       <div className="flex items-center gap-4">
         <div className="flex items-center gap-3 bg-white/5 p-1 rounded-xl border border-white/10">
           <button
-            onClick={() => !isBotRunning && setIsDemo(true)}
-            disabled={isBotRunning}
-            className={cn("px-3 py-1.5 rounded-lg text-[10px] font-black uppercase transition-all",
-              isDemo ? "bg-purple-600 text-white shadow-lg shadow-purple-500/20" : "text-muted-foreground hover:text-white")}
-          >Demo</button>
-          <button
             onClick={() => !isBotRunning && setIsDemo(false)}
             disabled={isBotRunning}
             className={cn("px-3 py-1.5 rounded-lg text-[10px] font-black uppercase transition-all",
               !isDemo ? "bg-red-600 text-white shadow-lg shadow-red-500/20" : "text-muted-foreground hover:text-white")}
           >Real</button>
+          <button
+            onClick={() => !isBotRunning && setIsDemo(true)}
+            disabled={isBotRunning}
+            className={cn("px-3 py-1.5 rounded-lg text-[10px] font-black uppercase transition-all",
+              isDemo ? "bg-purple-600 text-white shadow-lg shadow-purple-500/20" : "text-muted-foreground hover:text-white")}
+          >Demo</button>
         </div>
 
         {isBotRunning && (
@@ -63,7 +63,7 @@ export const Header = () => {
             <div className="flex items-center gap-2">
               <Wallet className="w-4 h-4 text-purple-500" />
               <span className="text-sm md:text-lg font-black tracking-tighter text-white">
-                {balance !== null ? `$${balance.toLocaleString("en-US", { minimumFractionDigits: 2 })}` : "Carregando..."}
+                {!isAuthorized ? "Desconectado" : balance !== null ? `$${balance.toLocaleString("en-US", { minimumFractionDigits: 2 })}` : "Carregando..."}
               </span>
             </div>
           </div>

@@ -1,12 +1,12 @@
 import React, { useState } from "react";
-import { Plus, X, CircleDot, Layers3, LogOut } from "lucide-react";
+import { Plus, X, CircleDot, Layers3, LogOut, ArrowUpDown } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import { cn } from "../lib/utils";
 import { useSyntheticTabsStore, type SyntheticOperationKind } from "../synthetic/tabs";
 import { useBotStore } from "../store/useBotStore";
 import { useMarketStore } from "../store/useMarketStore";
 
-const kindLabel = (kind: SyntheticOperationKind) => kind === "digits" ? "Digits" : "Accumulators";
+const kindLabel = (kind: SyntheticOperationKind) => kind === "digits" ? "Digits" : kind === "rise_fall" ? "Rise/Fall" : "Accumulators";
 
 export const SyntheticOperationTabs = () => {
   const { tabs, activeTabId, runningTabId, setActiveTab, closeTab, createTab } = useSyntheticTabsStore();
@@ -32,7 +32,7 @@ export const SyntheticOperationTabs = () => {
                 onClick={() => setActiveTab(tab.id)}
                 className="flex items-center gap-2 px-3 py-2 text-[10px] font-black uppercase whitespace-nowrap"
               >
-                {tab.kind === "digits" ? <CircleDot className="w-3.5 h-3.5 text-purple-400" /> : <Layers3 className="w-3.5 h-3.5 text-cyan-400" />}
+                {tab.kind === "digits" ? <CircleDot className="w-3.5 h-3.5 text-purple-400" /> : tab.kind === "rise_fall" ? <ArrowUpDown className="w-3.5 h-3.5 text-emerald-400" /> : <Layers3 className="w-3.5 h-3.5 text-cyan-400" />}
                 <span>{tab.name}</span>
                 {running && <span className="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse" />}
               </button>
@@ -63,6 +63,10 @@ export const SyntheticOperationTabs = () => {
             <button type="button" onClick={() => create("digits")} className="flex-1 rounded-xl border border-purple-500/30 bg-purple-500/10 px-3 py-2.5 text-left hover:bg-purple-500/15">
               <span className="text-[10px] font-black uppercase text-purple-300">Digits</span>
               <span className="block text-[9px] text-muted-foreground mt-0.5">Operação de dígitos</span>
+            </button>
+            <button type="button" onClick={() => create("rise_fall")} className="flex-1 rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-3 py-2.5 text-left hover:bg-emerald-500/15">
+              <span className="text-[10px] font-black uppercase text-emerald-300">Rise/Fall</span>
+              <span className="block text-[9px] text-muted-foreground mt-0.5">Direção dos ticks</span>
             </button>
             <button type="button" onClick={() => create("accumulators")} className="flex-1 rounded-xl border border-cyan-500/30 bg-cyan-500/10 px-3 py-2.5 text-left hover:bg-cyan-500/15">
               <span className="text-[10px] font-black uppercase text-cyan-300">Accumulators</span>
@@ -100,11 +104,16 @@ export const NoSyntheticTabs = () => {
             </button>
           </div>
         ) : (
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
             <button type="button" onClick={() => createTab("digits")} className="rounded-xl border border-purple-500/30 bg-purple-500/10 p-4 text-left hover:bg-purple-500/15">
               <CircleDot className="w-5 h-5 text-purple-400 mb-3" />
               <p className="text-[11px] font-black text-white uppercase">Digits</p>
               <p className="text-[9px] text-muted-foreground mt-1">Contratos de último dígito.</p>
+            </button>
+            <button type="button" onClick={() => createTab("rise_fall")} className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-4 text-left hover:bg-emerald-500/15">
+              <ArrowUpDown className="w-5 h-5 text-emerald-400 mb-3" />
+              <p className="text-[11px] font-black text-white uppercase">Rise/Fall</p>
+              <p className="text-[9px] text-muted-foreground mt-1">Direção dos ticks.</p>
             </button>
             <button type="button" onClick={() => createTab("accumulators")} className="rounded-xl border border-cyan-500/30 bg-cyan-500/10 p-4 text-left hover:bg-cyan-500/15">
               <Layers3 className="w-5 h-5 text-cyan-400 mb-3" />

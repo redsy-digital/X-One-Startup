@@ -34,6 +34,10 @@ const INITIAL: AccumulatorRuntimeState = {
   filterReasons: [],
   filterWaitTicksRemaining: 0,
   filterSamples: 0,
+  entryScore: 100,
+  marketRegime: "stable",
+  recoveryTicks: 0,
+  volatilityAcceleration: null,
 };
 
 interface AccumulatorStore {

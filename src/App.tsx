@@ -12,6 +12,7 @@ import { derivService } from "./lib/deriv";
 import { logger } from "./lib/logger";
 import { useConnectionStore, useBotStore, useMarketStore, useHistoryStore, useSettingsStore } from "./store";
 import { forexMarketDataService } from "./forex/market-data";
+import { buildDerivOAuthUrl, clearDerivOAuthState, exchangeDerivOAuthCode, getStoredCodeVerifier, getStoredOAuthState } from "./lib/derivOAuth";
 
 // ── Lazy page imports ─────────────────────────────────────────────────────────
 const HomePage       = React.lazy(() => import("./pages/HomePage").then(m => ({ default: m.HomePage })));
@@ -50,17 +51,20 @@ const DerivGuard = ({ children }: { children: React.ReactNode }) => {
 
 // ── Ecrã de conexão Deriv ─────────────────────────────────────────────────────
 const ConnectDerivScreen = () => {
-  const { connectWithPAT, derivError, derivLoading, derivTokenExpired } = useConnectionStore();
-  const [pat, setPat] = React.useState("");
+  const { derivError, derivLoading, derivTokenExpired } = useConnectionStore();
   const [loading, setLoading] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
 
-  const handleConnect = async () => {
-    if (!pat.trim()) { setError("Cola o teu token de acesso."); return; }
-    setLoading(true); setError(null);
-    const err = await connectWithPAT(pat.trim());
-    if (err) setError(err);
-    setLoading(false);
+  const handleOAuth = async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const url = await buildDerivOAuthUrl();
+      window.location.assign(url);
+    } catch (e: any) {
+      setError(e?.message || "Não foi possível iniciar a autorização Deriv.");
+      setLoading(false);
+    }
   };
 
   return (
@@ -74,8 +78,8 @@ const ConnectDerivScreen = () => {
             </h2>
             <p className="text-[11px] text-muted-foreground leading-relaxed">
               {derivTokenExpired
-                ? "O token usado anteriormente foi recusado pela Deriv. Insere um novo API Token para continuar."
-                : <>Cola o teu <span className="text-blue-300 font-bold">API Token</span> da Deriv. Gera-o em <span className="text-white font-bold">developers.deriv.com</span> → Dashboard → API Tokens → Read + Trade.</>}
+                ? "A autorização anterior expirou ou foi recusada. Autoriza novamente a tua conta Deriv."
+                : "Liga a tua conta Deriv através do OAuth 2.0 oficial. O X-One solicitará apenas a permissão de trading necessária."}
             </p>
           </div>
 
@@ -85,26 +89,82 @@ const ConnectDerivScreen = () => {
             </div>
           )}
 
-          <div className="space-y-2">
-            <label className="text-[10px] text-muted-foreground uppercase font-bold">API Token (pat_...)</label>
-            <div className="relative">
-              <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-              <Input type="password" placeholder="pat_0a1b2c3d..." value={pat}
-                onChange={e => setPat(e.target.value)}
-                onKeyDown={e => e.key === "Enter" && handleConnect()}
-                className="bg-black/40 border-white/10 h-12 pl-10 font-mono focus:border-blue-500/50" />
-            </div>
-          </div>
-
-          <Button onClick={handleConnect} disabled={loading || !pat.trim() || derivLoading}
-            className="w-full h-12 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 font-black uppercase tracking-widest disabled:opacity-50">
+          <Button
+            onClick={handleOAuth}
+            disabled={loading || derivLoading}
+            className="w-full h-12 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 font-black uppercase tracking-widest disabled:opacity-50"
+          >
             {loading || derivLoading
               ? <Loader2 className="w-5 h-5 animate-spin" />
-              : <><Link2 className="w-5 h-5 mr-2" /> Conectar Deriv</>
-            }
+              : <><Link2 className="w-5 h-5 mr-2" /> Autorizar com a Deriv</>}
           </Button>
+
+          <p className="text-[10px] text-center text-muted-foreground leading-relaxed">
+            Será aberta a página oficial da Deriv para iniciares sessão e autorizares o X-One.
+          </p>
         </NeonCard>
       </div>
+    </div>
+  );
+};
+
+// ── Callback OAuth 2.0 + PKCE ────────────────────────────────────────────────
+const DerivOAuthCallbackPage = () => {
+  const navigate = useNavigate();
+  const { connectWithOAuthToken } = useConnectionStore();
+  const [status, setStatus] = React.useState("A validar a autorização Deriv...");
+  const [error, setError] = React.useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const finishOAuth = async () => {
+      const params = new URLSearchParams(window.location.search);
+      const code = params.get("code");
+      const returnedState = params.get("state");
+      const oauthError = params.get("error");
+      const expectedState = getStoredOAuthState();
+      const codeVerifier = getStoredCodeVerifier();
+
+      if (oauthError) throw new Error(params.get("error_description") || `Autorização Deriv recusada: ${oauthError}`);
+      if (!code || !returnedState || !expectedState || returnedState !== expectedState) {
+        throw new Error("Validação OAuth falhou: state inválido ou autorização incompleta.");
+      }
+      if (!codeVerifier) throw new Error("Sessão PKCE perdida. Inicia novamente a autorização Deriv.");
+
+      setStatus("A trocar o código OAuth por uma sessão segura...");
+      const accessToken = await exchangeDerivOAuthCode(code, codeVerifier);
+      clearDerivOAuthState();
+
+      if (cancelled) return;
+      setStatus("A ligar a conta Deriv ao X-One...");
+      const connectionError = await connectWithOAuthToken(accessToken);
+      if (connectionError) throw new Error(connectionError);
+
+      if (!cancelled) navigate("/dashboard", { replace: true });
+    };
+
+    finishOAuth().catch((e: any) => {
+      if (cancelled) return;
+      clearDerivOAuthState();
+      setError(e?.message || "Não foi possível concluir a autorização Deriv.");
+    });
+
+    return () => { cancelled = true; };
+  }, [connectWithOAuthToken, navigate]);
+
+  return (
+    <div className="min-h-screen bg-[#0a0a0c] flex items-center justify-center p-4">
+      <NeonCard variant="blue" className="w-full max-w-md p-8 space-y-5 text-center">
+        {!error && <Loader2 className="w-10 h-10 mx-auto text-blue-400 animate-spin" />}
+        <h2 className="text-xl font-bold">{error ? "Falha na autorização" : "A conectar à Deriv"}</h2>
+        <p className="text-sm text-muted-foreground">{error || status}</p>
+        {error && (
+          <Button onClick={() => navigate("/dashboard", { replace: true })} className="w-full">
+            Voltar
+          </Button>
+        )}
+      </NeonCard>
     </div>
   );
 };
@@ -203,7 +263,7 @@ export default function App() {
     isAuthorized, setIsAuthorized, setBalance, setIsLoggedIn,
     initAuth,
   } = useConnectionStore();
-  const { addTick, setHistoricalCandles } = useMarketStore();
+  const { addTick, setHistoricalCandles, setHistoricalTicks, setHistoricalTicksLoading, setHistoricalTicksError } = useMarketStore();
   const { loadHistory } = useHistoryStore();
   const { loadSettings } = useSettingsStore();
 
@@ -218,7 +278,15 @@ export default function App() {
   // Listeners WebSocket permanentes
   useEffect(() => {
     const unsubTick = derivService.on("tick", (data: any) => {
-      if (data.tick) addTick({ time: data.tick.epoch, price: data.tick.quote });
+      if (data.tick) {
+        const currentSymbol = useMarketStore.getState().symbol;
+        if (String(data.tick.symbol ?? "") !== currentSymbol) return;
+        addTick({
+          time: Number(data.tick.epoch),
+          price: Number(data.tick.quote),
+          pipSize: Number.isInteger(Number(data.tick.pip_size)) ? Number(data.tick.pip_size) : undefined,
+        });
+      }
     });
     const unsubBalance = derivService.on("balance", (data: any) => {
       if (!data.error) setBalance(data.balance.balance);
@@ -247,6 +315,18 @@ export default function App() {
       logger.system(`✓ ${historical.length} candles históricos carregados`);
     });
 
+    const unsubDisconnected = derivService.on("ws_disconnected", (data: any) => {
+      useConnectionStore.setState({
+        isAuthorized: false,
+        balance: null,
+      });
+      logger.system(`WebSocket Deriv: Desconectado${data?.code ? ` (code ${data.code})` : ""}`);
+    });
+
+    const unsubConnected = derivService.on("ws_connected", () => {
+      logger.system("WebSocket Deriv: conectado — a aguardar autorização/saldo...");
+    });
+
     const unsubAuth = derivService.on("authorize", (data: any) => {
       if (!data.error) {
         useConnectionStore.setState({
@@ -273,17 +353,23 @@ export default function App() {
       }
     });
 
-    return () => { unsubTick(); unsubBalance(); unsubPOC(); unsubCandles(); unsubAuth(); };
+    return () => { unsubTick(); unsubBalance(); unsubPOC(); unsubCandles(); unsubAuth(); unsubDisconnected(); unsubConnected(); };
   }, []);
 
   // Feed de mercado — derivado do mercado/símbolo/timeframe actual.
   // Forex usa frxEURUSD + M1 por defeito nesta Fase 2; continua sem execução.
+  // Em Synthetic/Digits o timeframe das velas é local e não deve provocar
+  // novo pedido dos mesmos 1.000 ticks; apenas o Forex depende dele para
+  // escolher o histórico remoto.
   const { market, symbol, timeframe } = useMarketStore();
+  const marketHistoryKey = market === "forex" ? timeframe : 0;
   const forexHistoryRequestRef = React.useRef(0);
   useEffect(() => {
     if (!isAuthorized || !market) return;
 
     const requestEpoch = ++forexHistoryRequestRef.current;
+    setHistoricalTicksError(null);
+    setHistoricalTicksLoading(market !== "forex");
     derivService.unsubscribeTicks(symbol);
     derivService.subscribeTicks(symbol);
 
@@ -318,14 +404,29 @@ export default function App() {
         })
         .catch((error: any) => logger.error(`New API contracts_for: ${error.message}`));
     } else {
-      derivService.requestTicksHistory(symbol, 500, timeframe);
+      // Digits: o gráfico começa com 1000 ticks históricos e continua a
+      // receber apenas os novos ticks da subscrição em tempo real.
+      derivService.getRawTicksHistory(symbol, 1000, "latest")
+        .then(({ times, prices }) => {
+          if (requestEpoch !== forexHistoryRequestRef.current) return;
+          const historical = times.map((time, i) => ({ time, price: Number(prices[i]) }))
+            .filter((tick) => Number.isFinite(tick.time) && Number.isFinite(tick.price));
+          setHistoricalTicks(historical, useMarketStore.getState().timeframe);
+          logger.system(`✓ Digits | ${historical.length} ticks históricos carregados | ${symbol}`);
+        })
+        .catch((error: any) => {
+          if (requestEpoch !== forexHistoryRequestRef.current) return;
+          const message = error?.message || String(error);
+          setHistoricalTicksError(message);
+          logger.error(`Digits histórico ${symbol}: ${message}`);
+        });
     }
 
     return () => {
       if (market === "forex") forexHistoryRequestRef.current++;
       derivService.unsubscribeTicks(symbol);
     };
-  }, [isAuthorized, market, symbol, timeframe]);
+  }, [isAuthorized, market, symbol, marketHistoryKey]);
 
   // Carregar histórico quando user autentica
   useEffect(() => {
@@ -360,6 +461,8 @@ export default function App() {
         </ErrorBoundary>
       )}
       <Routes>
+      <Route path="/oauth/callback" element={<DerivOAuthCallbackPage />} />
+
       {/* Home — com Layout (Header + Sidebar como as outras páginas) */}
       <Route path="/" element={
         <Layout>

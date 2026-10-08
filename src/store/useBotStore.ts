@@ -7,8 +7,11 @@ export interface LossCooldown {
 
 interface BotState {
   isBotRunning: boolean;
+  isBotPaused: boolean;
   setIsBotRunning: (val: boolean) => void;
   toggleBot: () => void;
+  pauseBot: () => void;
+  resumeBot: () => void;
   lossCooldown: LossCooldown | null;
   setLossCooldown: (cooldown: LossCooldown | null) => void;
   // Cronómetro de sessão — vive aqui (store global) em vez de estado local
@@ -40,10 +43,14 @@ function transition(state: BotState, val: boolean): Partial<BotState> {
 
 export const useBotStore = create<BotState>((set) => ({
   isBotRunning: false,
+  isBotPaused: false,
   sessionStartedAt: null,
   sessionFrozenElapsed: 0,
 
-  setIsBotRunning: (val) => set((state) => transition(state, val)),
+  setIsBotRunning: (val) => set((state) => ({ ...transition(state, val), isBotPaused: val ? false : false })),
+
+  pauseBot: () => set((state) => state.isBotRunning ? { isBotPaused: true } : state),
+  resumeBot: () => set((state) => state.isBotRunning ? { isBotPaused: false } : state),
 
   toggleBot: () => set((state) => transition(state, !state.isBotRunning)),
 

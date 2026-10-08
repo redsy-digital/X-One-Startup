@@ -32,7 +32,7 @@ export const NeonCard = ({
       )}
       {...props}
     >
-      <div className="relative z-10">
+      <div className="relative z-10 h-full min-h-0">
         {children}
       </div>
       {/* Subtle background glow */}

@@ -160,7 +160,17 @@ export const HistoryPanel = () => {
         </div>
       </div>
 
-      <div className="space-y-3">
+      <NeonCard variant="blue" className="p-3 min-h-0">
+        <div
+          className="max-h-[calc(100vh-430px)] min-h-[260px] overflow-y-auto space-y-3 pr-1"
+          style={{
+            scrollbarWidth: "thin",
+            scrollbarColor: "rgba(59,130,246,0.3) transparent",
+            overscrollBehavior: "contain",
+            touchAction: "pan-y",
+            WebkitOverflowScrolling: "touch",
+          }}
+        >
         <AnimatePresence mode="popLayout">
           {filteredHistory.map((trade) => (
             <motion.div
@@ -230,7 +240,8 @@ export const HistoryPanel = () => {
             <p className="text-muted-foreground">Nenhuma operação encontrada com os filtros selecionados.</p>
           </div>
         )}
-      </div>
+        </div>
+      </NeonCard>
     </div>
   );
 };
