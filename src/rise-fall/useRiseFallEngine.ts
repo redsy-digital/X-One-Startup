@@ -24,8 +24,9 @@ export function useRiseFallEngine(config: RiseFallConfig) {
     config.symbol, config.durationTicks, config.contract, config.stake, config.targetProfit, config.stopLoss,
     config.useMartingale, config.martingaleMultiplier, config.maxMartingaleSteps, config.maxConsecutiveLosses,
     config.cooldownAfterLoss, config.sequenceEnabled, config.sequenceLength, config.blockDensityEnabled,
-    config.blockWindow, config.blockThreshold, config.alternatingEnabled, config.alternatingLength,
-    config.isAuthorized, config.isBotRunning, config.isBotPaused, config.balance,
+    config.blockWindow, config.blockThreshold, config.alternatingEnabled, config.alternatingLength, config.percentChannelEnabled, config.percentChannelWindow, config.percentChannelThreshold,
+    config.percentChannelSequenceLength, config.momentumFilterEnabled, config.trendProtectionEnabled,
+    config.sustainableInertiaEnabled, config.isAuthorized, config.isBotRunning, config.isBotPaused, config.balance,
   ]);
 
   useEffect(() => {

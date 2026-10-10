@@ -26,6 +26,7 @@ export interface RiseFallConfig {
   percentChannelSequenceLength: number;
   momentumFilterEnabled: boolean;
   trendProtectionEnabled: boolean;
+  sustainableInertiaEnabled: boolean;
   isAuthorized: boolean;
   isBotRunning: boolean;
   isBotPaused: boolean;

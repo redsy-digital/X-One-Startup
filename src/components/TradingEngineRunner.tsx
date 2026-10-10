@@ -107,6 +107,7 @@ export const TradingEngineRunner = () => {
     percentChannelSequenceLength: settings.riseFallPercentChannelSequenceLength,
     momentumFilterEnabled: settings.riseFallMomentumFilterEnabled,
     trendProtectionEnabled: settings.riseFallTrendProtectionEnabled,
+    sustainableInertiaEnabled: settings.riseFallSustainableInertiaEnabled,
     isAuthorized,
     isBotRunning: riseFallRunning,
     isBotPaused,

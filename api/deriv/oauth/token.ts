@@ -8,7 +8,7 @@ export default async function handler(req: any, res: any) {
 
   const { code, code_verifier } = req.body ?? {};
   const clientId = process.env.DERIV_CLIENT_ID;
-  const redirectUri = "https://x-one-startup.vercel.app/oauth/callback";
+  const redirectUri = "https://x-one-tartup.vercel.app/oauth/callback";
 
   if (!clientId) {
     res.status(500).json({ error: "oauth_server_not_configured" });

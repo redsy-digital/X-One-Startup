@@ -18,6 +18,7 @@ interface TradingChartProps {
   showIndicators?: boolean;
   showSymbolLabel?: boolean;
   percentChannel?: { upper: number; lower: number; center: number } | null;
+  sustainableInertia?: { resistance: number; support: number; trendline: { time: number; value: number }[] } | null;
 }
 
 // ── EMA array (todos os valores, não apenas o último) ─────────────────────────
@@ -34,7 +35,7 @@ function emaArray(closes: number[], period: number): (number | null)[] {
   return result;
 }
 
-const TradingChartInner = ({ candles, symbol, chartType = "candles", showIndicators = true, showSymbolLabel = true, percentChannel = null }: TradingChartProps) => {
+const TradingChartInner = ({ candles, symbol, chartType = "candles", showIndicators = true, showSymbolLabel = true, percentChannel = null, sustainableInertia = null }: TradingChartProps) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const candleSeriesRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
@@ -42,6 +43,8 @@ const TradingChartInner = ({ candles, symbol, chartType = "candles", showIndicat
   const emaFastRef = useRef<ISeriesApi<"Line"> | null>(null);
   const emaSlowRef = useRef<ISeriesApi<"Line"> | null>(null);
   const channelLinesRef = useRef<{ upper: any; lower: any; center: any } | null>(null);
+  const inertiaLinesRef = useRef<{ resistance: any; support: any } | null>(null);
+  const inertiaTrendRef = useRef<ISeriesApi<"Line"> | null>(null);
   const prevLengthRef = useRef(0);
   const prevFirstTimeRef = useRef<number | null>(null);
   const prevLastTimeRef = useRef<number | null>(null);
@@ -118,6 +121,9 @@ const TradingChartInner = ({ candles, symbol, chartType = "candles", showIndicat
     });
 
     // EMA 21 (roxo)
+    const inertiaTrend = chart.addLineSeries({ color: "#3b82f6", lineWidth: 1, lineStyle: 0, title: "Gradiente de Inércia", priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false });
+    inertiaTrend.setData([]);
+
     const emaSlow = chart.addLineSeries({
       color: "#a855f7",
       lineWidth: 1,
@@ -131,6 +137,7 @@ const TradingChartInner = ({ candles, symbol, chartType = "candles", showIndicat
     lineSeriesRef.current = lineSeries;
     emaFastRef.current = emaFast;
     emaSlowRef.current = emaSlow;
+    inertiaTrendRef.current = inertiaTrend;
 
     // Resize observer — responsivo ao container
     const observer = new ResizeObserver((entries) => {
@@ -148,6 +155,7 @@ const TradingChartInner = ({ candles, symbol, chartType = "candles", showIndicat
       lineSeriesRef.current = null;
       emaFastRef.current = null;
       emaSlowRef.current = null;
+      inertiaTrendRef.current = null;
     };
   }, [chartType]);
 
@@ -167,6 +175,37 @@ const TradingChartInner = ({ candles, symbol, chartType = "candles", showIndicat
     }
     return () => { if (channelLinesRef.current) { try { series.removePriceLine(channelLinesRef.current.upper); series.removePriceLine(channelLinesRef.current.lower); series.removePriceLine(channelLinesRef.current.center); } catch {} channelLinesRef.current = null; } };
   }, [percentChannel?.upper, percentChannel?.lower, percentChannel?.center, chartType, candles.length]);
+
+  useEffect(() => {
+    const series: any = chartType === "candles" ? candleSeriesRef.current : lineSeriesRef.current;
+    if (!series || !inertiaTrendRef.current) return;
+    if (inertiaLinesRef.current) {
+      try { series.removePriceLine(inertiaLinesRef.current.resistance); series.removePriceLine(inertiaLinesRef.current.support); } catch {}
+      inertiaLinesRef.current = null;
+    }
+    if (sustainableInertia) {
+      inertiaLinesRef.current = {
+        resistance: series.createPriceLine({ price: sustainableInertia.resistance, color: "#22c55e", lineWidth: 1, lineStyle: 2, axisLabelVisible: true, title: "Resistência HH" }),
+        support: series.createPriceLine({ price: sustainableInertia.support, color: "#ef4444", lineWidth: 1, lineStyle: 2, axisLabelVisible: true, title: "Suporte LL" }),
+      };
+      const sortedTrend = sustainableInertia.trendline.filter(p => Number.isFinite(p.time) && Number.isFinite(p.value)).slice(-5);
+      const points: LineData[] = [];
+      let lastTime = Number.NEGATIVE_INFINITY;
+      for (const point of sortedTrend) {
+        // Deriv can emit multiple ticks with the same epoch second. Lightweight
+        // Charts requires strictly increasing times, so keep the tick order
+        // while disambiguating same-second points for this visual overlay.
+        const time = Math.max(Math.floor(point.time), lastTime + 1);
+        points.push({ time: time as UTCTimestamp, value: point.value });
+        lastTime = time;
+      }
+      inertiaTrendRef.current.setData(points);
+    } else inertiaTrendRef.current.setData([]);
+    return () => {
+      if (inertiaLinesRef.current) { try { series.removePriceLine(inertiaLinesRef.current.resistance); series.removePriceLine(inertiaLinesRef.current.support); } catch {} inertiaLinesRef.current = null; }
+      inertiaTrendRef.current?.setData([]);
+    };
+  }, [sustainableInertia?.resistance, sustainableInertia?.support, sustainableInertia?.trendline, chartType, candles.length]);
 
   // ── Actualizar dados dos candles ──────────────────────────────────────────
   useEffect(() => {

@@ -104,3 +104,41 @@ export function findPercentChannelSignal(args: { prices: number[]; directions: R
   }
   return null;
 }
+
+
+export interface SustainableInertiaSignal {
+  contract: RiseFallContractType;
+  direction: RiseFallDirection;
+  observationHigh: number;
+  observationLow: number;
+  confirmationCount: number;
+  reason: string;
+}
+
+/**
+ * 15-tick model: first 10 prices define observation extremes; last 5 directions
+ * validate the slope. A signal only occurs on the live tick that breaks the
+ * observation extreme, so historical context cannot cause a retroactive BUY.
+ */
+export function findSustainableInertiaSignal(
+  prices: number[],
+  directions: RiseFallDirection[],
+): SustainableInertiaSignal | null {
+  if (prices.length < 15 || directions.length < 5) return null;
+  const window = prices.slice(-15);
+  const observation = window.slice(0, 10);
+  const high = Math.max(...observation);
+  const low = Math.min(...observation);
+  const current = window[window.length - 1];
+  if (!Number.isFinite(high) || !Number.isFinite(low) || high <= low || !Number.isFinite(current)) return null;
+  const confirm = directions.slice(-5);
+  const upCount = confirm.filter(d => d === "UP").length;
+  const downCount = confirm.filter(d => d === "DOWN").length;
+  if (current > high && upCount >= 4) {
+    return { contract: "CALL", direction: "UP", observationHigh: high, observationLow: low, confirmationCount: upCount, reason: `Inércia Direcional Sustentável: rompimento do máximo + gradiente UP ${upCount}/5` };
+  }
+  if (current < low && downCount >= 4) {
+    return { contract: "PUT", direction: "DOWN", observationHigh: high, observationLow: low, confirmationCount: downCount, reason: `Inércia Direcional Sustentável: rompimento do mínimo + gradiente DOWN ${downCount}/5` };
+  }
+  return null;
+}

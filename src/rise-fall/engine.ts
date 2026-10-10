@@ -4,7 +4,7 @@ import { saveTrade } from "../lib/storage";
 import { useSessionStore } from "../store/useSessionStore";
 import { useBotStore } from "../store/useBotStore";
 import { useMarketStore } from "../store/useMarketStore";
-import { contractForDirection, directionFromPrices, findAlternatingSignal, findBlockDensitySignal, findSequenceSignal, findPercentChannelSignal } from "./strategy";
+import { contractForDirection, directionFromPrices, findAlternatingSignal, findBlockDensitySignal, findSequenceSignal, findPercentChannelSignal, findSustainableInertiaSignal } from "./strategy";
 import type { RiseFallConfig, RiseFallContractType, RiseFallDirection, RiseFallRuntimeState } from "./types";
 
 type PreparedProposal = { proposal: any; contract: RiseFallContractType; stake: number; duration: number; preparedAt: number };
@@ -83,7 +83,7 @@ export class RiseFallEngineV1 {
       this.unsubs.push(derivService.on("proposal_open_contract", (data) => this.handleContractUpdate(data)));
     }
     logger.system(`Rise/Fall V1 iniciado | ${this.config.symbol} | duração ${this.config.durationTicks}t`);
-    logger.system(`Rise/Fall estratégias | Sequência ${this.config.sequenceEnabled ? "ON" : "OFF"} | Densidade ${this.config.blockDensityEnabled ? "ON" : "OFF"} | Alternância ${this.config.alternatingEnabled ? "ON" : "OFF"}`);
+    logger.system(`Rise/Fall estratégias | Sequência ${this.config.sequenceEnabled ? "ON" : "OFF"} | Densidade ${this.config.blockDensityEnabled ? "ON" : "OFF"} | Alternância ${this.config.alternatingEnabled ? "ON" : "OFF"} | Inércia Sustentável ${this.config.sustainableInertiaEnabled ? "ON" : "OFF"}`);
     this.prewarmAll();
   }
 
@@ -106,7 +106,7 @@ export class RiseFallEngineV1 {
       this.config.sequenceEnabled !== config.sequenceEnabled || this.config.sequenceLength !== config.sequenceLength ||
       this.config.blockDensityEnabled !== config.blockDensityEnabled || this.config.blockWindow !== config.blockWindow ||
       this.config.blockThreshold !== config.blockThreshold || this.config.alternatingEnabled !== config.alternatingEnabled ||
-      this.config.alternatingLength !== config.alternatingLength || this.config.percentChannelEnabled !== config.percentChannelEnabled || this.config.percentChannelWindow !== config.percentChannelWindow || this.config.percentChannelThreshold !== config.percentChannelThreshold || this.config.percentChannelSequenceLength !== config.percentChannelSequenceLength || this.config.momentumFilterEnabled !== config.momentumFilterEnabled || this.config.trendProtectionEnabled !== config.trendProtectionEnabled || this.config.martingaleMultiplier !== config.martingaleMultiplier ||
+      this.config.alternatingLength !== config.alternatingLength || this.config.percentChannelEnabled !== config.percentChannelEnabled || this.config.percentChannelWindow !== config.percentChannelWindow || this.config.percentChannelThreshold !== config.percentChannelThreshold || this.config.percentChannelSequenceLength !== config.percentChannelSequenceLength || this.config.momentumFilterEnabled !== config.momentumFilterEnabled || this.config.trendProtectionEnabled !== config.trendProtectionEnabled || this.config.sustainableInertiaEnabled !== config.sustainableInertiaEnabled || this.config.martingaleMultiplier !== config.martingaleMultiplier ||
       this.config.maxMartingaleSteps !== config.maxMartingaleSteps;
     this.config = config;
     if (changed && !this.processing && !this.activeContractId) {
@@ -299,12 +299,18 @@ export class RiseFallEngineV1 {
     if (this.directions.length > HISTORY_MAX) this.directions.splice(0, this.directions.length - HISTORY_MAX);
 
     let signal: { contract: RiseFallContractType; key: string; reason: string } | null = null;
-    if (this.config.percentChannelEnabled) {
+    // Higher priority than the simpler heuristics: this strategy requires a
+    // confirmed 15-tick breakout and is evaluated once for the current live tick.
+    if (this.config.sustainableInertiaEnabled) {
+      const inertia = findSustainableInertiaSignal(this.prices.slice(-15), this.directions.slice(-5));
+      if (inertia) signal = { contract: inertia.contract, key: `sustainable-inertia:${this.directions.length}:${inertia.contract}:${price}`, reason: inertia.reason };
+    }
+    if (!signal && this.config.percentChannelEnabled) {
       const recentPrices = this.prices.slice(-channelWindow);
       const s = findPercentChannelSignal({ prices: recentPrices, directions: this.directionStreak, thresholdPercent: this.config.percentChannelThreshold, sequenceLength: this.config.percentChannelSequenceLength, momentumFilter: this.config.momentumFilterEnabled });
       if (s) signal = { contract: s.contract, key: `percent-channel:${this.directions.length}:${s.contract}:${recentPrices[recentPrices.length - 1]}`, reason: s.reason };
     }
-    if (this.config.sequenceEnabled) {
+    if (!signal && this.config.sequenceEnabled) {
       const s = findSequenceSignal(this.directions, this.config.sequenceLength);
       if (s) signal = { contract: s.contract, key: `seq:${this.directions.length}:${s.direction}:${this.config.sequenceLength}`, reason: `Sequência de ${this.config.sequenceLength} ${s.direction === "UP" ? "altas" : "baixas"}` };
     }

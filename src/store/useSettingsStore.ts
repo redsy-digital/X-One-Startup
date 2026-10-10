@@ -78,6 +78,7 @@ export interface BotSettings {
   riseFallPercentChannelSequenceLength: number;
   riseFallMomentumFilterEnabled: boolean;
   riseFallTrendProtectionEnabled: boolean;
+  riseFallSustainableInertiaEnabled: boolean;
 
   // Digits V1 — entrada fixa, sem indicadores/previsão.
   digitsContract: DigitsContractType;
@@ -150,6 +151,7 @@ export const DEFAULT_SETTINGS: BotSettings = {
   riseFallPercentChannelSequenceLength: 3,
   riseFallMomentumFilterEnabled: false,
   riseFallTrendProtectionEnabled: false,
+  riseFallSustainableInertiaEnabled: false,
 
   digitsContract: "DIGITUNDER",
   digitsTargetDigit: 9,
@@ -234,6 +236,7 @@ async function saveToSupabase(settings: BotSettings) {
       rise_fall_percent_channel_sequence_length: Math.max(1, Math.min(100, Math.round(settings.riseFallPercentChannelSequenceLength))),
       rise_fall_momentum_filter_enabled: settings.riseFallMomentumFilterEnabled,
       rise_fall_trend_protection_enabled: settings.riseFallTrendProtectionEnabled,
+      rise_fall_sustainable_inertia_enabled: settings.riseFallSustainableInertiaEnabled,
       digits_contract: settings.digitsContract,
       // Random is persisted separately because the database target_digit column is numeric.
       digits_target_digit: typeof settings.digitsTargetDigit === "number" ? settings.digitsTargetDigit : 9,
@@ -352,6 +355,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
           riseFallPercentChannelSequenceLength: Math.max(1, Math.min(100, numberOr(data.rise_fall_percent_channel_sequence_length, DEFAULT_SETTINGS.riseFallPercentChannelSequenceLength))),
           riseFallMomentumFilterEnabled: Boolean(data.rise_fall_momentum_filter_enabled),
           riseFallTrendProtectionEnabled: Boolean(data.rise_fall_trend_protection_enabled),
+          riseFallSustainableInertiaEnabled: Boolean(data.rise_fall_sustainable_inertia_enabled),
           digitsContract: normalizeDigitsContract(data.digits_contract),
           digitsTargetDigit: Boolean(data.digits_follow_up)
             ? "follow_up"
