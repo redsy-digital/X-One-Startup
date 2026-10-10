@@ -17,6 +17,7 @@ interface TradingChartProps {
   chartType?: "candles" | "line";
   showIndicators?: boolean;
   showSymbolLabel?: boolean;
+  percentChannel?: { upper: number; lower: number; center: number } | null;
 }
 
 // ── EMA array (todos os valores, não apenas o último) ─────────────────────────
@@ -33,13 +34,14 @@ function emaArray(closes: number[], period: number): (number | null)[] {
   return result;
 }
 
-const TradingChartInner = ({ candles, symbol, chartType = "candles", showIndicators = true, showSymbolLabel = true }: TradingChartProps) => {
+const TradingChartInner = ({ candles, symbol, chartType = "candles", showIndicators = true, showSymbolLabel = true, percentChannel = null }: TradingChartProps) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const candleSeriesRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
   const lineSeriesRef = useRef<ISeriesApi<"Line"> | null>(null);
   const emaFastRef = useRef<ISeriesApi<"Line"> | null>(null);
   const emaSlowRef = useRef<ISeriesApi<"Line"> | null>(null);
+  const channelLinesRef = useRef<{ upper: any; lower: any; center: any } | null>(null);
   const prevLengthRef = useRef(0);
   const prevFirstTimeRef = useRef<number | null>(null);
   const prevLastTimeRef = useRef<number | null>(null);
@@ -148,6 +150,23 @@ const TradingChartInner = ({ candles, symbol, chartType = "candles", showIndicat
       emaSlowRef.current = null;
     };
   }, [chartType]);
+
+  useEffect(() => {
+    const series: any = chartType === "candles" ? candleSeriesRef.current : lineSeriesRef.current;
+    if (!series) return;
+    if (channelLinesRef.current) {
+      try { series.removePriceLine(channelLinesRef.current.upper); series.removePriceLine(channelLinesRef.current.lower); series.removePriceLine(channelLinesRef.current.center); } catch {}
+      channelLinesRef.current = null;
+    }
+    if (percentChannel) {
+      channelLinesRef.current = {
+        upper: series.createPriceLine({ price: percentChannel.upper, color: "#22c55e", lineWidth: 2, lineStyle: 0, axisLabelVisible: true, title: "Highest High" }),
+        lower: series.createPriceLine({ price: percentChannel.lower, color: "#ef4444", lineWidth: 2, lineStyle: 0, axisLabelVisible: true, title: "Lowest Low" }),
+        center: series.createPriceLine({ price: percentChannel.center, color: "#3b82f6", lineWidth: 2, lineStyle: 0, axisLabelVisible: true, title: "Center Line" }),
+      };
+    }
+    return () => { if (channelLinesRef.current) { try { series.removePriceLine(channelLinesRef.current.upper); series.removePriceLine(channelLinesRef.current.lower); series.removePriceLine(channelLinesRef.current.center); } catch {} channelLinesRef.current = null; } };
+  }, [percentChannel?.upper, percentChannel?.lower, percentChannel?.center, chartType, candles.length]);
 
   // ── Actualizar dados dos candles ──────────────────────────────────────────
   useEffect(() => {

@@ -72,6 +72,12 @@ export interface BotSettings {
   riseFallBlockThreshold: number;
   riseFallAlternatingEnabled: boolean;
   riseFallAlternatingLength: number;
+  riseFallPercentChannelEnabled: boolean;
+  riseFallPercentChannelWindow: number;
+  riseFallPercentChannelThreshold: number;
+  riseFallPercentChannelSequenceLength: number;
+  riseFallMomentumFilterEnabled: boolean;
+  riseFallTrendProtectionEnabled: boolean;
 
   // Digits V1 — entrada fixa, sem indicadores/previsão.
   digitsContract: DigitsContractType;
@@ -138,6 +144,12 @@ export const DEFAULT_SETTINGS: BotSettings = {
   riseFallBlockThreshold: 80,
   riseFallAlternatingEnabled: false,
   riseFallAlternatingLength: 4,
+  riseFallPercentChannelEnabled: false,
+  riseFallPercentChannelWindow: 20,
+  riseFallPercentChannelThreshold: 70,
+  riseFallPercentChannelSequenceLength: 3,
+  riseFallMomentumFilterEnabled: false,
+  riseFallTrendProtectionEnabled: false,
 
   digitsContract: "DIGITUNDER",
   digitsTargetDigit: 9,
@@ -216,6 +228,12 @@ async function saveToSupabase(settings: BotSettings) {
       rise_fall_block_threshold: Math.max(50, Math.min(100, Number(settings.riseFallBlockThreshold))),
       rise_fall_alternating_enabled: settings.riseFallAlternatingEnabled,
       rise_fall_alternating_length: Math.max(2, Math.min(20, Math.round(settings.riseFallAlternatingLength))),
+      rise_fall_percent_channel_enabled: settings.riseFallPercentChannelEnabled,
+      rise_fall_percent_channel_window: Math.max(5, Math.min(500, Math.round(settings.riseFallPercentChannelWindow))),
+      rise_fall_percent_channel_threshold: Math.max(1, Math.min(99, Number(settings.riseFallPercentChannelThreshold))),
+      rise_fall_percent_channel_sequence_length: Math.max(1, Math.min(100, Math.round(settings.riseFallPercentChannelSequenceLength))),
+      rise_fall_momentum_filter_enabled: settings.riseFallMomentumFilterEnabled,
+      rise_fall_trend_protection_enabled: settings.riseFallTrendProtectionEnabled,
       digits_contract: settings.digitsContract,
       // Random is persisted separately because the database target_digit column is numeric.
       digits_target_digit: typeof settings.digitsTargetDigit === "number" ? settings.digitsTargetDigit : 9,
@@ -328,6 +346,12 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
           riseFallBlockThreshold: Math.max(50, Math.min(100, numberOr(data.rise_fall_block_threshold, DEFAULT_SETTINGS.riseFallBlockThreshold))),
           riseFallAlternatingEnabled: Boolean(data.rise_fall_alternating_enabled),
           riseFallAlternatingLength: Math.max(2, Math.min(20, numberOr(data.rise_fall_alternating_length, DEFAULT_SETTINGS.riseFallAlternatingLength))),
+          riseFallPercentChannelEnabled: Boolean(data.rise_fall_percent_channel_enabled),
+          riseFallPercentChannelWindow: Math.max(5, Math.min(500, numberOr(data.rise_fall_percent_channel_window, DEFAULT_SETTINGS.riseFallPercentChannelWindow))),
+          riseFallPercentChannelThreshold: Math.max(1, Math.min(99, numberOr(data.rise_fall_percent_channel_threshold, DEFAULT_SETTINGS.riseFallPercentChannelThreshold))),
+          riseFallPercentChannelSequenceLength: Math.max(1, Math.min(100, numberOr(data.rise_fall_percent_channel_sequence_length, DEFAULT_SETTINGS.riseFallPercentChannelSequenceLength))),
+          riseFallMomentumFilterEnabled: Boolean(data.rise_fall_momentum_filter_enabled),
+          riseFallTrendProtectionEnabled: Boolean(data.rise_fall_trend_protection_enabled),
           digitsContract: normalizeDigitsContract(data.digits_contract),
           digitsTargetDigit: Boolean(data.digits_follow_up)
             ? "follow_up"

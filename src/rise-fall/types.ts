@@ -20,6 +20,12 @@ export interface RiseFallConfig {
   blockThreshold: number;
   alternatingEnabled: boolean;
   alternatingLength: number;
+  percentChannelEnabled: boolean;
+  percentChannelWindow: number;
+  percentChannelThreshold: number;
+  percentChannelSequenceLength: number;
+  momentumFilterEnabled: boolean;
+  trendProtectionEnabled: boolean;
   isAuthorized: boolean;
   isBotRunning: boolean;
   isBotPaused: boolean;

@@ -1,0 +1,2 @@
+ALTER TABLE public.bot_settings ADD COLUMN IF NOT EXISTS rise_fall_percent_channel_sequence_length integer NOT NULL DEFAULT 3;
+DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'bot_settings_rise_fall_percent_channel_sequence_length_check') THEN ALTER TABLE public.bot_settings ADD CONSTRAINT bot_settings_rise_fall_percent_channel_sequence_length_check CHECK (rise_fall_percent_channel_sequence_length BETWEEN 1 AND 100); END IF; END $$;

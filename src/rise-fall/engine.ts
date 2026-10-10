@@ -4,7 +4,7 @@ import { saveTrade } from "../lib/storage";
 import { useSessionStore } from "../store/useSessionStore";
 import { useBotStore } from "../store/useBotStore";
 import { useMarketStore } from "../store/useMarketStore";
-import { contractForDirection, directionFromPrices, findAlternatingSignal, findBlockDensitySignal, findSequenceSignal } from "./strategy";
+import { contractForDirection, directionFromPrices, findAlternatingSignal, findBlockDensitySignal, findSequenceSignal, findPercentChannelSignal } from "./strategy";
 import type { RiseFallConfig, RiseFallContractType, RiseFallDirection, RiseFallRuntimeState } from "./types";
 
 type PreparedProposal = { proposal: any; contract: RiseFallContractType; stake: number; duration: number; preparedAt: number };
@@ -16,6 +16,9 @@ const HISTORY_MAX = 1000;
 export class RiseFallEngineV1 {
   private config: RiseFallConfig;
   private directions: RiseFallDirection[] = [];
+  private directionStreak: RiseFallDirection[] = [];
+  private prices: number[] = [];
+  private trendBlockedDirection: RiseFallDirection | null = null;
   private previousPrice: number | null = null;
   private signalKey: string | null = null;
   private activeContractId: string | null = null;
@@ -103,7 +106,7 @@ export class RiseFallEngineV1 {
       this.config.sequenceEnabled !== config.sequenceEnabled || this.config.sequenceLength !== config.sequenceLength ||
       this.config.blockDensityEnabled !== config.blockDensityEnabled || this.config.blockWindow !== config.blockWindow ||
       this.config.blockThreshold !== config.blockThreshold || this.config.alternatingEnabled !== config.alternatingEnabled ||
-      this.config.alternatingLength !== config.alternatingLength || this.config.martingaleMultiplier !== config.martingaleMultiplier ||
+      this.config.alternatingLength !== config.alternatingLength || this.config.percentChannelEnabled !== config.percentChannelEnabled || this.config.percentChannelWindow !== config.percentChannelWindow || this.config.percentChannelThreshold !== config.percentChannelThreshold || this.config.percentChannelSequenceLength !== config.percentChannelSequenceLength || this.config.momentumFilterEnabled !== config.momentumFilterEnabled || this.config.trendProtectionEnabled !== config.trendProtectionEnabled || this.config.martingaleMultiplier !== config.martingaleMultiplier ||
       this.config.maxMartingaleSteps !== config.maxMartingaleSteps;
     this.config = config;
     if (changed && !this.processing && !this.activeContractId) {
@@ -117,6 +120,8 @@ export class RiseFallEngineV1 {
 
   private resetSignalState() {
     this.directions = [];
+    this.directionStreak = [];
+    this.prices = [];
     this.previousPrice = null;
     this.signalKey = null;
     this.historySeeded = false;
@@ -145,7 +150,10 @@ export class RiseFallEngineV1 {
       if (direction) this.directions.push(direction);
     }
     this.directions = this.directions.slice(-HISTORY_MAX);
+    this.directionStreak = [];
+    for (const d of this.directions.slice().reverse()) { if (this.directionStreak.length && this.directionStreak[this.directionStreak.length - 1] !== d) break; this.directionStreak.unshift(d); }
     this.previousPrice = previous;
+    this.prices = usable.map(t => Number(t.price)).filter(Number.isFinite).slice(-HISTORY_MAX);
     this.historySeeded = true;
     logger.telemetry(`[HISTORY] Rise/Fall contexto inicializado | ${usable.length} ticks | ${this.directions.length} direções | entrada só pode nascer de tick ao vivo`);
   }
@@ -276,13 +284,26 @@ export class RiseFallEngineV1 {
     }
     const price = Number(tick.quote);
     if (!Number.isFinite(price)) return;
-    const direction = directionFromPrices(this.previousPrice, price);
+    const previousTickPrice = this.previousPrice;
+    const direction = directionFromPrices(previousTickPrice, price);
     this.previousPrice = price;
-    if (!direction) return;
+    this.prices.push(price);
+    const channelWindow = Math.max(5, Math.min(500, Math.floor(this.config.percentChannelWindow)));
+    if (this.prices.length > Math.max(HISTORY_MAX, channelWindow)) this.prices.splice(0, this.prices.length - Math.max(HISTORY_MAX, channelWindow));
+    if (!direction) { this.directionStreak = []; return; }
+    if (this.directionStreak.length && this.directionStreak[this.directionStreak.length - 1] !== direction) this.directionStreak = [];
+    this.directionStreak.push(direction);
+    if (this.directionStreak.length > 1000) this.directionStreak.shift();
     this.directions.push(direction);
+    if (this.config.trendProtectionEnabled && this.trendBlockedDirection && direction !== this.trendBlockedDirection) { this.trendBlockedDirection = null; logger.telemetry("Rise/Fall Trend Protection: sequência direcional quebrou; entradas desbloqueadas."); }
     if (this.directions.length > HISTORY_MAX) this.directions.splice(0, this.directions.length - HISTORY_MAX);
 
     let signal: { contract: RiseFallContractType; key: string; reason: string } | null = null;
+    if (this.config.percentChannelEnabled) {
+      const recentPrices = this.prices.slice(-channelWindow);
+      const s = findPercentChannelSignal({ prices: recentPrices, directions: this.directionStreak, thresholdPercent: this.config.percentChannelThreshold, sequenceLength: this.config.percentChannelSequenceLength, momentumFilter: this.config.momentumFilterEnabled });
+      if (s) signal = { contract: s.contract, key: `percent-channel:${this.directions.length}:${s.contract}:${recentPrices[recentPrices.length - 1]}`, reason: s.reason };
+    }
     if (this.config.sequenceEnabled) {
       const s = findSequenceSignal(this.directions, this.config.sequenceLength);
       if (s) signal = { contract: s.contract, key: `seq:${this.directions.length}:${s.direction}:${this.config.sequenceLength}`, reason: `Sequência de ${this.config.sequenceLength} ${s.direction === "UP" ? "altas" : "baixas"}` };
@@ -295,6 +316,7 @@ export class RiseFallEngineV1 {
       const s = findAlternatingSignal(this.directions, this.config.alternatingLength);
       if (s) signal = { contract: s.contract, key: `alt:${this.directions.length}:${s.lastDirection}:${this.config.alternatingLength}`, reason: `Alternância ${this.config.alternatingLength} ticks` };
     }
+    if (signal && this.config.trendProtectionEnabled && this.trendBlockedDirection && direction === this.trendBlockedDirection) signal = null;
     if (!signal || signal.key === this.signalKey) {
       this.prewarmAll();
       return;
@@ -322,7 +344,9 @@ export class RiseFallEngineV1 {
     this.activeContract = null;
     this.activeStake = null;
     saveTrade({ market: "synthetic", id, time: Number(c.date_start) > 0 ? Number(c.date_start) * 1000 : Date.now(), symbol: String(c.underlying_symbol ?? c.symbol ?? this.config.symbol), type: contract, stake, status: result, profit: Number.isFinite(profit) ? profit : 0, entryPrice: this.toNumber(c.entry_tick), exitPrice: this.toNumber(c.exit_tick ?? c.exit_spot) });
+    if (!isWin && this.config.trendProtectionEnabled) { this.trendBlockedDirection = contract === "PUT" ? "UP" : "DOWN"; logger.telemetry(`Rise/Fall Trend Protection ativada após LOSS | aguarda quebra de ${this.trendBlockedDirection}`); }
     if (isWin) {
+      this.trendBlockedDirection = null;
       useSessionStore.getState().recordWin(profit);
       this.risk.currentStake = this.config.stake;
       this.risk.martingaleStep = 0;

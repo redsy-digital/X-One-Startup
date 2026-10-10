@@ -57,3 +57,50 @@ export function findAlternatingSignal(
   // Break the perfect alternation by repeating the direction of the last tick.
   return { contract: contractForDirection(lastDirection), lastDirection };
 }
+
+
+export interface PercentChannelState {
+  highestHigh: number; lowestLow: number; centerLine: number; percent: number; zone: "HIGH" | "LOW" | "CENTER";
+}
+
+export function calculatePercentChannel(prices: number[], currentPrice?: number): PercentChannelState | null {
+  const valid = prices.filter(Number.isFinite);
+  if (valid.length < 2) return null;
+  const highestHigh = Math.max(...valid);
+  const lowestLow = Math.min(...valid);
+  const centerLine = (highestHigh + lowestLow) / 2;
+  const price = currentPrice ?? valid[valid.length - 1];
+  const halfRange = (highestHigh - lowestLow) / 2;
+  if (!Number.isFinite(halfRange) || halfRange <= 0) return { highestHigh, lowestLow, centerLine, percent: 0, zone: "CENTER" };
+  if (price > centerLine) return { highestHigh, lowestLow, centerLine, percent: Math.max(0, Math.min(100, ((price - centerLine) / (highestHigh - centerLine)) * 100)), zone: "HIGH" };
+  if (price < centerLine) return { highestHigh, lowestLow, centerLine, percent: Math.max(0, Math.min(100, ((centerLine - price) / (centerLine - lowestLow)) * 100)), zone: "LOW" };
+  return { highestHigh, lowestLow, centerLine, percent: 0, zone: "CENTER" };
+}
+
+export function findPercentChannelSignal(args: { prices: number[]; directions: RiseFallDirection[]; thresholdPercent: number; sequenceLength: number; momentumFilter: boolean }): { contract: RiseFallContractType; reason: string } | null {
+  const channel = calculatePercentChannel(args.prices);
+  const sequenceLength = Math.max(1, Math.min(100, Math.floor(args.sequenceLength)));
+  if (!channel || args.directions.length < sequenceLength) return null;
+  const lastSequence = args.directions.slice(-sequenceLength);
+  if (lastSequence.length === sequenceLength && lastSequence.every(d => d === "UP") && channel.zone === "HIGH" && channel.percent >= args.thresholdPercent) {
+    if (args.momentumFilter) {
+      if (sequenceLength < 3) return null;
+      const tail = args.prices.slice(-(sequenceLength + 1));
+      const moves = tail.slice(1).map((p, i) => Math.abs(p - tail[i]));
+      const finalMove = moves[moves.length - 1];
+      if (moves.length < sequenceLength || !(finalMove < moves[0] && finalMove < moves[1])) return null;
+    }
+    return { contract: "PUT", reason: `Canal Percentual ${channel.percent.toFixed(1)}% zona alta + ${sequenceLength} UP` };
+  }
+  if (lastSequence.length === sequenceLength && lastSequence.every(d => d === "DOWN") && channel.zone === "LOW" && channel.percent >= args.thresholdPercent) {
+    if (args.momentumFilter) {
+      if (sequenceLength < 3) return null;
+      const tail = args.prices.slice(-(sequenceLength + 1));
+      const moves = tail.slice(1).map((p, i) => Math.abs(p - tail[i]));
+      const finalMove = moves[moves.length - 1];
+      if (moves.length < sequenceLength || !(finalMove < moves[0] && finalMove < moves[1])) return null;
+    }
+    return { contract: "CALL", reason: `Canal Percentual ${channel.percent.toFixed(1)}% zona baixa + ${sequenceLength} DOWN` };
+  }
+  return null;
+}
