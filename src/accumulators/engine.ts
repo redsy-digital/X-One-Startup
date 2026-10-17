@@ -131,13 +131,20 @@ export class AccumulatorEngineV1 {
         this.manualContract = true;
         this.processing = true;
         this.setRuntime({ activeContractId: contractId, isProcessing: true, isManualContract: true });
-        derivService.send({ proposal_open_contract: 1, contract_id: contractId, subscribe: 1 });
+        derivService.send({ proposal_open_contract: 1, contract_id: Number(contractId), subscribe: 1 });
       } catch (e: any) {
         return { ok: false, message: e?.message || "Não foi possível localizar o contrato Accumulator." };
       }
     }
 
     try {
+      // New API best practice: only issue sell when the live contract snapshot
+      // explicitly says it is eligible. If the field is absent in a response,
+      // preserve compatibility and let the API validate the request.
+      const snapshot = await derivService.getOpenContract(contractId);
+      if (snapshot?.is_valid_to_sell === false) {
+        return { ok: false, message: "A Deriv indica que este contrato ainda não pode ser vendido. Tenta novamente no próximo tick." };
+      }
       await derivService.sellContract(contractId);
       logger.trade(`■ ACCU fechado manualmente | ${contractId}${external ? " | operação manual detectada" : ""}`);
       return { ok: true };
@@ -329,7 +336,7 @@ export class AccumulatorEngineV1 {
       });
 
       logger.trade(`${manual ? "▶ ACCU MANUAL" : "▶ ACCU"} ${this.config.symbol} | $${stake.toFixed(2)} | ${this.closeModeLabel(closeMode, profitTarget)} | crescimento ${Math.round(growthRate * 100)}%`);
-      derivService.send({ proposal_open_contract: 1, contract_id: buy.contractId, subscribe: 1 });
+      derivService.send({ proposal_open_contract: 1, contract_id: Number(buy.contractId), subscribe: 1 });
 
       saveTrade({
         market: "synthetic",
@@ -387,7 +394,11 @@ export class AccumulatorEngineV1 {
         });
 
         if (!c.is_sold && !this.closeRequested && this.shouldClose(elapsed, profit, profitPercent, c)) {
-          void this.requestAutomaticClose(id, this.getCloseReason(elapsed, profit, profitPercent, c));
+          if (c.is_valid_to_sell === false) {
+            logger.telemetry(`ACCU: condição de fecho atingida, mas a Deriv ainda não permite sell | ${id}`);
+          } else {
+            void this.requestAutomaticClose(id, this.getCloseReason(elapsed, profit, profitPercent, c));
+          }
         }
       }
     } else {

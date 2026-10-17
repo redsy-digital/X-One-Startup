@@ -49,6 +49,7 @@ const TradingChartInner = ({ candles, symbol, chartType = "candles", showIndicat
   const prevFirstTimeRef = useRef<number | null>(null);
   const prevLastTimeRef = useRef<number | null>(null);
   const prevIntervalRef = useRef<number | null>(null);
+  const prevCandlesSnapshotRef = useRef<Candle[]>([]);
 
   // ── Criar chart na montagem ───────────────────────────────────────────────
   useEffect(() => {
@@ -215,6 +216,7 @@ const TradingChartInner = ({ candles, symbol, chartType = "candles", showIndicat
       prevFirstTimeRef.current = null;
       prevLastTimeRef.current = null;
       prevIntervalRef.current = null;
+      prevCandlesSnapshotRef.current = [];
       candleSeriesRef.current.setData([]);
       lineSeriesRef.current?.setData([]);
       emaFastRef.current?.setData([]);
@@ -229,10 +231,24 @@ const TradingChartInner = ({ candles, symbol, chartType = "candles", showIndicat
       prevIntervalRef.current !== null &&
       currentInterval !== null &&
       prevIntervalRef.current !== currentInterval;
+    const previousCandles = prevCandlesSnapshotRef.current;
+    // Detect updates to candles other than the last one. This happens when a
+    // delayed/out-of-order tick is inserted into an older time bucket. The
+    // chart library's incremental update only supports the latest timestamp;
+    // trying to use it for an older candle can leave the visual chart stale.
+    const earlierCandleChanged = previousCandles.length > 1 && candles.length === previousCandles.length &&
+      candles.slice(0, -1).some((c, index) => {
+        const old = previousCandles[index];
+        return !old || c.time !== old.time || c.open !== old.open || c.high !== old.high || c.low !== old.low || c.close !== old.close;
+      });
+    const outOfOrderStructureChange = prevLastTimeRef.current !== null && lastTime !== null &&
+      lastTime <= prevLastTimeRef.current && candles.length !== prevLengthRef.current;
     const datasetReset =
       timeframeChanged ||
       (prevFirstTimeRef.current !== null && firstTime !== null && prevFirstTimeRef.current !== firstTime) ||
-      candles.length < prevLengthRef.current;
+      candles.length < prevLengthRef.current ||
+      earlierCandleChanged ||
+      outOfOrderStructureChange;
     const isInitial = prevLengthRef.current === 0;
 
     if (datasetReset || isInitial) {
@@ -266,6 +282,7 @@ const TradingChartInner = ({ candles, symbol, chartType = "candles", showIndicat
     prevFirstTimeRef.current = firstTime;
     prevLastTimeRef.current = lastTime;
     prevIntervalRef.current = currentInterval;
+    prevCandlesSnapshotRef.current = candles.map((c) => ({ ...c }));
   }, [candles]);
 
   // ── Actualizar EMAs ───────────────────────────────────────────────────────

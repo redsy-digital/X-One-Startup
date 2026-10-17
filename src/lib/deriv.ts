@@ -79,6 +79,7 @@ export class DerivService {
   private lastMessageAt: number | null = null;
   private lastPingAt: number | null = null;
   private lastPongAt: number | null = null;
+  private lastPingRttMs: number | null = null;
   private reconnectCount = 0;
 
   // Epoch: garante que apenas a conexão mais recente processa eventos
@@ -285,6 +286,8 @@ export class DerivService {
       lastMessageAt: this.lastMessageAt,
       lastPingAt: this.lastPingAt,
       lastPongAt: this.lastPongAt,
+      lastPingRttMs: this.lastPingRttMs,
+      lastMessageAgeMs: this.lastMessageAt === null ? null : Math.max(0, Date.now() - this.lastMessageAt),
       reconnectCount: this.reconnectCount,
       pendingRequests: this.pendingRequests.size,
     };
@@ -308,7 +311,11 @@ export class DerivService {
   on(type: string, callback: (data: any) => void) {
     if (!this.listeners.has(type)) this.listeners.set(type, new Set());
     this.listeners.get(type)!.add(callback);
-    return () => this.listeners.get(type)?.delete(callback);
+    return () => {
+      const callbacks = this.listeners.get(type);
+      callbacks?.delete(callback);
+      if (callbacks?.size === 0) this.listeners.delete(type);
+    };
   }
 
   subscribeTicks(symbol: string) {
@@ -423,10 +430,10 @@ export class DerivService {
    * perdida durante uma pequena falha/race do WebSocket.
    */
   async getOpenContract(contractId: string) {
-    if (!contractId) throw new Error("Contract ID ausente para reconciliação.");
+    const numericContractId = toContractIdNumber(contractId, "reconciliação");
     const data = await this.request<any>({
       proposal_open_contract: 1,
-      contract_id: contractId,
+      contract_id: numericContractId,
     }, "proposal_open_contract", 8000);
     if (data.error) throw new Error(data.error.message || "Erro em proposal_open_contract");
     return data.proposal_open_contract ?? null;
@@ -632,8 +639,9 @@ export class DerivService {
 
   /** New API: sells an active contract at market price (price=0). */
   async sellContract(contractId: string) {
-    if (!contractId) throw new Error("ID do contrato ausente para sell.");
-    const data = await this.request<any>({ sell: contractId, price: 0 }, "sell", 15000);
+    // New API schema defines `sell` as an integer contract ID, not a string.
+    const numericContractId = toContractIdNumber(contractId, "sell");
+    const data = await this.request<any>({ sell: numericContractId, price: 0 }, "sell", 15000);
     if (data.error) throw new Error(data.error.message || "Erro ao fechar contrato.");
     const sell = data.sell;
     if (!sell?.contract_id) throw new Error("Resposta de sell sem contract_id.");
@@ -815,6 +823,7 @@ export class DerivService {
         const parsedAt = Date.now();
         if (data.msg_type === "ping" && data.req_id !== undefined) {
           this.lastPongAt = Date.now();
+          if (this.lastPingAt !== null) this.lastPingRttMs = Math.max(0, this.lastPongAt - this.lastPingAt);
           this.heartbeatInFlight = false;
         }
         if (this._debugLogAll) {
@@ -843,6 +852,11 @@ export class DerivService {
               socketReceivedAt,
               parsedAt,
               parseMs: Math.max(0, parsedAt - socketReceivedAt),
+              // Diagnostic only: device clock skew can affect this value, so
+              // it is never used alone to accept/reject a trade signal.
+              serverTickAgeMs: Number.isFinite(Number(data.tick?.epoch))
+                ? socketReceivedAt - Number(data.tick.epoch) * 1000
+                : null,
             },
           });
         }
@@ -918,7 +932,11 @@ export class DerivService {
       this.request<any>({ ping: 1 }, "ping", 10000)
         .then(() => {
           this.lastPongAt = Date.now();
+          this.lastPingRttMs = Math.max(0, this.lastPongAt - (this.lastPingAt ?? this.lastPongAt));
           this.heartbeatInFlight = false;
+          if (this.lastPingRttMs >= 2000) {
+            logger.telemetry(`[WS] Latência elevada no ping Deriv: ${this.lastPingRttMs}ms`);
+          }
         })
         .catch(() => {
           this.heartbeatInFlight = false;
@@ -952,7 +970,9 @@ export class DerivService {
       console.warn("[Deriv] Max reconnect attempts reached");
       return;
     }
-    const delay = Math.min(2000 * Math.pow(2, this.reconnectAttempts), 30000);
+    // Exponential backoff with jitter prevents synchronized reconnect storms.
+    const baseDelay = Math.min(1000 * Math.pow(2, this.reconnectAttempts), 30000);
+    const delay = Math.round(baseDelay * (0.8 + Math.random() * 0.4));
     this.reconnectAttempts++;
     this.reconnectCount++;
     console.log(`[Deriv] Reconnecting in ${delay}ms (attempt ${this.reconnectAttempts})`);
@@ -969,7 +989,16 @@ export class DerivService {
   }
 
   private _emit(type: string, data: any) {
-    this.listeners.get(type)?.forEach((cb) => cb(data));
+    // One faulty UI/engine listener must never prevent other listeners (or
+    // transport telemetry) from receiving the same WebSocket message.
+    const callbacks = Array.from(this.listeners.get(type) ?? []);
+    for (const callback of callbacks) {
+      try {
+        callback(data);
+      } catch (error: any) {
+        logger.error(`[Deriv] Listener falhou (${type}): ${error?.message || error}`);
+      }
+    }
   }
 
   private _emitAuthError(message: string, code = "AuthError") {
@@ -988,6 +1017,19 @@ export class DerivService {
 
 export const derivService = new DerivService();
 
+
+/**
+ * Contract IDs are kept as strings inside X-One for stable UI/store comparisons,
+ * but the Deriv New API WebSocket schema requires integer IDs at the boundary.
+ */
+function toContractIdNumber(value: string | number, operation: string): number {
+  const normalized = typeof value === "string" ? value.trim() : value;
+  const id = typeof normalized === "number" ? normalized : Number(normalized);
+  if (!Number.isSafeInteger(id) || id <= 0) {
+    throw new Error(`ID de contrato inválido para ${operation}.`);
+  }
+  return id;
+}
 
 function toFiniteNumber(value: unknown): number | undefined {
   if (typeof value === "number" && Number.isFinite(value)) return value;

@@ -16,8 +16,8 @@ import { advanceTwinSplittingState, findMirrorSymmetrySignal } from "./matchProb
 
 const DEFAULT_DIGITS_DURATION = 3;
 const MIN_STAKE = 0.35;
-const PREWARM_MAX_AGE_MS = 3000;
-const PREWARM_REFRESH_AGE_MS = 1800;
+const PREWARM_MAX_AGE_MS = 1500;
+const PREWARM_REFRESH_AGE_MS = 700;
 
 export function randomDigitsTarget(): number {
   return Math.floor(Math.random() * 10);
@@ -369,7 +369,7 @@ export class DigitsEngineV1 {
       });
       logger.trade(`✓ Digits BUY confirmado | ${entryLabel} | ID ${buy.contractId} | $${(buy.buyPrice ?? askPrice).toFixed(2)}`);
 
-      derivService.send({ proposal_open_contract: 1, contract_id: buy.contractId, subscribe: 1 });
+      derivService.send({ proposal_open_contract: 1, contract_id: Number(buy.contractId), subscribe: 1 });
       this.startContractRecovery(buy.contractId);
 
       saveTrade({

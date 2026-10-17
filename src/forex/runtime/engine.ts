@@ -36,7 +36,7 @@ class DerivContractMonitor implements ForexContractMonitorGateway {
 
   subscribeContract(contractId: string): void {
     this.active = contractId;
-    derivService.send({ proposal_open_contract: 1, contract_id: contractId, subscribe: 1 });
+    derivService.send({ proposal_open_contract: 1, contract_id: Number(contractId), subscribe: 1 });
   }
 
   onContractUpdate(listener: (snapshot: ForexContractSnapshot) => void): () => void {

@@ -423,7 +423,10 @@ export default function App() {
     }
 
     return () => {
-      if (market === "forex") forexHistoryRequestRef.current++;
+      // Invalidate any in-flight history response for every market. Without
+      // this guard, a slower response from the previous synthetic symbol can
+      // overwrite the active symbol's chart after a quick tab/symbol switch.
+      if (requestEpoch === forexHistoryRequestRef.current) forexHistoryRequestRef.current++;
       derivService.unsubscribeTicks(symbol);
     };
   }, [isAuthorized, market, symbol, marketHistoryKey]);

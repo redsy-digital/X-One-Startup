@@ -259,7 +259,7 @@ export class RiseFallEngineV1 {
       logger.telemetry(`[ENTRY] Rise/Fall Pendente | contrato ${buy.contractId} | stake=${stake}`);
       logger.telemetry(`[ENTRY] Rise/Fall BUY enviado | +${buyRequestAt - triggerAt}ms desde trigger`);
       logger.telemetry(`[ENTRY] Rise/Fall BUY resposta | ${buyCompletedAt - buyRequestAt}ms após envio | +${buyCompletedAt - triggerAt}ms desde trigger${triggerToServerPurchase !== null ? ` | Δtick→purchase=${triggerToServerPurchase}ms` : ""}`);
-      derivService.send({ proposal_open_contract: 1, contract_id: buy.contractId, subscribe: 1 });
+      derivService.send({ proposal_open_contract: 1, contract_id: Number(buy.contractId), subscribe: 1 });
       this.startRecovery(buy.contractId);
     } catch (e: any) {
       this.processing = false;

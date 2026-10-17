@@ -86,27 +86,53 @@ export const useMarketStore = create<MarketState>((set) => ({
 
   addTick: (newTick) =>
     set((state) => {
-      // During the initial history request, keep every live tick separate.
-      // The history response is merged with this queue by epoch afterwards.
-      if (state.historicalTicksLoading) {
-        const pending = [...state.pendingLiveTicks, newTick];
-        const deduped = new Map<number, TickData>();
-        for (const tick of pending) deduped.set(tick.time, tick);
-        return { pendingLiveTicks: Array.from(deduped.values()).sort((a, b) => a.time - b.time) };
+      // Never freeze the live chart while historical data is loading. Trading
+      // engines consume the same stream independently, so the chart must keep
+      // rendering the live feed while the historical request is in flight.
+      // Keep a reconciliation queue as well; setHistoricalTicks merges it with
+      // the history response so live ticks win on overlapping epochs.
+      const pendingLiveTicks = state.historicalTicksLoading
+        ? (() => {
+            const pending = [...state.pendingLiveTicks, newTick];
+            const byEpoch = new Map<number, TickData>();
+            for (const tick of pending) byEpoch.set(tick.time, tick);
+            return Array.from(byEpoch.values()).sort((a, b) => a.time - b.time).slice(-MAX_TICKS);
+          })()
+        : state.pendingLiveTicks;
+
+      const appendedTicks = [...state.ticks, newTick];
+      const lastExistingTick = state.ticks[state.ticks.length - 1];
+      const arrivedOutOfOrder = !!lastExistingTick && newTick.time < lastExistingTick.time;
+      const newTicks = (arrivedOutOfOrder
+        ? appendedTicks.map((tick, index) => ({ tick, index })).sort((a, b) => a.tick.time - b.tick.time || a.index - b.index).map(({ tick }) => tick)
+        : appendedTicks
+      ).slice(-MAX_TICKS);
+
+      // Normal in-order path is incremental. If a delayed/replayed tick arrives
+      // out of order, rebuild candles in chronological order instead of
+      // appending an older candle after a newer one (which can make chart libs
+      // reject updates and appear frozen).
+      if (arrivedOutOfOrder) {
+        const candles: Candle[] = [];
+        for (const tick of newTicks) {
+          const bucket = Math.floor(tick.time / state.timeframe) * state.timeframe;
+          const last = candles[candles.length - 1];
+          if (last && last.time === bucket) {
+            last.high = Math.max(last.high, tick.price);
+            last.low = Math.min(last.low, tick.price);
+            last.close = tick.price;
+          } else {
+            candles.push({ time: bucket, open: tick.price, high: tick.price, low: tick.price, close: tick.price });
+          }
+        }
+        return { ticks: newTicks, candles: candles.slice(-MAX_CANDLES), pendingLiveTicks };
       }
 
-      // Update ticks array
-      const newTicks = [...state.ticks, newTick].slice(-MAX_TICKS);
-
-      // Tick → Candle logic
-      const currentTimestamp =
-        Math.floor(newTick.time / state.timeframe) * state.timeframe;
+      const currentTimestamp = Math.floor(newTick.time / state.timeframe) * state.timeframe;
       const prev = state.candles;
       const lastCandle = prev.length > 0 ? prev[prev.length - 1] : null;
-
       let newCandles: Candle[];
       if (lastCandle && lastCandle.time === currentTimestamp) {
-        // Update existing candle
         const updated: Candle = {
           ...lastCandle,
           high: Math.max(lastCandle.high, newTick.price),
@@ -115,18 +141,16 @@ export const useMarketStore = create<MarketState>((set) => ({
         };
         newCandles = [...prev.slice(0, -1), updated];
       } else {
-        // Open new candle
-        const newCandle: Candle = {
+        newCandles = [...prev, {
           time: currentTimestamp,
           open: newTick.price,
           high: newTick.price,
           low: newTick.price,
           close: newTick.price,
-        };
-        newCandles = [...prev, newCandle].slice(-MAX_CANDLES);
+        }].slice(-MAX_CANDLES);
       }
 
-      return { ticks: newTicks, candles: newCandles };
+      return { ticks: newTicks, candles: newCandles, pendingLiveTicks };
     }),
 
   resetMarketData: () => set({ ticks: [], candles: [], historicalTicksLoading: false, historicalTicksError: null, pendingLiveTicks: [] }),
@@ -134,8 +158,11 @@ export const useMarketStore = create<MarketState>((set) => ({
   setHistoricalTicks: (ticks, timeframe) => {
     set((state) => {
       const byEpoch = new Map<number, TickData>();
-      // Historical first, then live: live representation wins on duplicate epoch.
+      // Historical first, then the already-rendered live state and its queue:
+      // live data wins on duplicate epoch. This also covers ticks received
+      // while the chart remains live during the history request.
       for (const tick of ticks) byEpoch.set(tick.time, tick);
+      for (const tick of state.ticks) byEpoch.set(tick.time, tick);
       for (const tick of state.pendingLiveTicks) byEpoch.set(tick.time, tick);
       const sorted = Array.from(byEpoch.values())
         .sort((a, b) => a.time - b.time)
